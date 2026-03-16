@@ -29,7 +29,7 @@ QUALITY_MODEL_PATH = os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite")
 DIAG_MODEL_PATH = os.path.join(PROJECT_ROOT, "heart_model_quant.tflite")
 
 # 使用你刚才 ls 查出的真实存在的文件名
-TEST_WAV = os.path.join(PROJECT_ROOT, "/home/rasp4b/FypPi/data/raw/Dataset2/training-a/a0001.wav")
+TEST_WAV = os.path.join(PROJECT_ROOT, "/home/rasp4b/FypPi/data/raw/Dataset2/training-a/heart_sound_1773566721_processed.wav")
 
 def main():
     print("🚀 FypProj 双级推理系统 · 最终调试版")
@@ -78,9 +78,11 @@ def main():
         q_pred = np.argmax(q_probs)
 
         if q_pred == 0:  # 0 代表 Poor Quality
-            print(f"片段 {i+1:02d}: ⚠️  [质量拦截] 信号干扰过强 | 噪声概率: {q_probs[0]:.2%}")
+            print(f"片段 {i+1:02d}: ⚠️  [质量拦截] Poor={q_probs[0]:.2%} | Good={q_probs[1]:.2%}")
             continue
-        
+
+        print(f"片段 {i+1:02d}: ✅ [质量通过] Poor={q_probs[0]:.2%} | Good={q_probs[1]:.2%}")
+
         # --- 第二级：疾病诊断 ---
         d_interpreter.set_tensor(d_in_idx, input_tensor)
         d_interpreter.invoke()
