@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# 数据集（体积大，不入库）
+data/
+
+# 异常录音（运行时生成）
+abnormal_records/
+
+# 第三方源码包
+pybluez2-0.46/
+
+# 模型文件（体积大，按需选择）
+# 如需入库请注释掉对应行
+*.tflite
+
+# 系统文件
+.DS_Store
+Thumbs.db
