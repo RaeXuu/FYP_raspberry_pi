@@ -19,6 +19,7 @@
 #define DECIMATE        4     // 降采样倍数 SAMPLE_RATE / OUTPUT_RATE
 #define BLOCK_SIZE      128   // I2S DMA 缓冲区大小（字节）
 #define OUT_BLOCK_BYTES 128   // BLE 单包大小（字节）= 64 samples @ 2000Hz
+#define DIGITAL_GAIN    30.0f // 数字增益倍数，放大后限幅到 ±32767
 
 // BLE UUID
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -153,7 +154,10 @@ void loop() {
             decimateCount++;
             if (decimateCount >= DECIMATE) {
                 decimateCount = 0;
-                outBuffer[outIndex++] = (int16_t)lpf2;
+                float gained = lpf2 * DIGITAL_GAIN;
+                if (gained >  32767.0f) gained =  32767.0f;
+                if (gained < -32767.0f) gained = -32767.0f;
+                outBuffer[outIndex++] = (int16_t)gained;
 
                 // 4. 输出缓冲满 64 samples → BLE 发送
                 if (outIndex >= OUT_BLOCK_BYTES / 2) {
