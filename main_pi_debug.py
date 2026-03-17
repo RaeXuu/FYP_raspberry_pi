@@ -3,116 +3,96 @@ import sys
 import numpy as np
 import ai_edge_litert.interpreter as tflite
 import yaml
-import time
-import psutil
 
 # ==========================================
-# 1. 路径修复：确保 Python 能找到 src 包
+# 环境初始化
 # ==========================================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# 从你确认存在的 pipeline 脚本中导入预处理函数
 from src.preprocess.preprocess_pipeline import preprocess_wav_for_pi
 
+# ==========================================
+# 配置（与 main_pi.py 保持一致）
+# ==========================================
+SQA_THRESHOLD = 0.9
+
+TEST_WAV = os.path.join(
+    PROJECT_ROOT,
+    "data/raw/Dataset2/training-a/heart_sound_1770104436_processed.wav"
+)
+
+
 def softmax(x):
-    """将神经网络原始输出(Logits)转换为概率(0-1)"""
     e_x = np.exp(x - np.max(x))
     return e_x / e_x.sum()
 
-# ==========================================
-# 2. 配置与文件路径
-# ==========================================
-CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.yaml")
-QUALITY_MODEL_PATH = os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite")
-DIAG_MODEL_PATH = os.path.join(PROJECT_ROOT, "heart_model_quant.tflite")
-
-# 使用你刚才 ls 查出的真实存在的文件名
-TEST_WAV = os.path.join(PROJECT_ROOT, "/home/rasp4b/FypPi/data/raw/Dataset2/training-a/heart_sound_1773566721_processed.wav")
 
 def main():
-    print("🚀 FypProj 双级推理系统 · 最终调试版")
-    print("="*60)
-
-    # ========= 性能监控开始 =========
-    process = psutil.Process(os.getpid())
-    start_time = time.time()
-    start_mem = process.memory_info().rss / 1024**2  # MB
-
-    # A. 文件完整性检查
-    for p in [CONFIG_PATH, QUALITY_MODEL_PATH, DIAG_MODEL_PATH, TEST_WAV]:
-        if not os.path.exists(p):
-            print(f"❌ 错误: 找不到关键文件 {p}")
-            return
-
-    # B. 环境初始化
-    with open(CONFIG_PATH, "r") as f:
+    # 加载配置
+    with open(os.path.join(PROJECT_ROOT, "config.yaml"), "r") as f:
         config = yaml.safe_load(f)
 
-    # 初始化 TFLite 解释器
-    q_interpreter = tflite.Interpreter(model_path=QUALITY_MODEL_PATH)
-    d_interpreter = tflite.Interpreter(model_path=DIAG_MODEL_PATH)
-    q_interpreter.allocate_tensors()
-    d_interpreter.allocate_tensors()
+    # 加载模型
+    q_interp = tflite.Interpreter(model_path=os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite"))
+    d_interp = tflite.Interpreter(model_path=os.path.join(PROJECT_ROOT, "heart_model_quant.tflite"))
+    q_interp.allocate_tensors()
+    d_interp.allocate_tensors()
 
-    q_in_idx = q_interpreter.get_input_details()[0]['index']
-    q_out_idx = q_interpreter.get_output_details()[0]['index']
-    d_in_idx = d_interpreter.get_input_details()[0]['index']
-    d_out_idx = d_interpreter.get_output_details()[0]['index']
+    q_in  = q_interp.get_input_details()[0]['index']
+    q_out = q_interp.get_output_details()[0]['index']
+    d_in  = d_interp.get_input_details()[0]['index']
+    d_out = d_interp.get_output_details()[0]['index']
 
-    # C. 执行预处理 (滤波 -> 切片 -> Mel 转换)
-    print(f"🎬 正在读取音频并提取特征: {os.path.basename(TEST_WAV)}")
-    # 调用你的 pipeline 进行特征工程
+    print(f"🎬 读取音频: {os.path.basename(TEST_WAV)}")
     tensors = preprocess_wav_for_pi(TEST_WAV, config)
-    print(f"📦 预处理成功: 已生成 {len(tensors)} 个 2 秒切片")
-    print("-" * 60)
+    print(f"📦 共 {len(tensors)} 个片段")
+    print("-" * 50)
 
-    # D. 级联推理循环
-    for i, input_tensor in enumerate(tensors):
-        # --- 第一级：质量评估 (SQA) ---
-        q_interpreter.set_tensor(q_in_idx, input_tensor)
-        q_interpreter.invoke()
-        q_logits = q_interpreter.get_tensor(q_out_idx)[0]
-        q_probs = softmax(q_logits)
-        q_pred = np.argmax(q_probs)
+    results = []  # (sqa_score, prob_normal)
 
-        if q_pred == 0:  # 0 代表 Poor Quality
-            print(f"片段 {i+1:02d}: ⚠️  [质量拦截] Poor={q_probs[0]:.2%} | Good={q_probs[1]:.2%}")
+    for i, tensor in enumerate(tensors):
+        # 第一级：SQA 质量评估
+        q_interp.set_tensor(q_in, tensor)
+        q_interp.invoke()
+        q_probs   = softmax(q_interp.get_tensor(q_out)[0])
+        sqa_score = q_probs[1]  # index 1 = Good
+        print(f"片段 {i+1:02d}: SQA → Poor={q_probs[0]:.2%} | Good={sqa_score:.2%}")
+
+        if sqa_score < SQA_THRESHOLD:
+            print(f"         ⚠️  质量不足，跳过")
             continue
 
-        print(f"片段 {i+1:02d}: ✅ [质量通过] Poor={q_probs[0]:.2%} | Good={q_probs[1]:.2%}")
+        # 第二级：诊断模型
+        d_interp.set_tensor(d_in, tensor)
+        d_interp.invoke()
+        d_probs     = softmax(d_interp.get_tensor(d_out)[0])
+        prob_normal = d_probs[0]  # index 0 = Normal
+        diag_label  = "Normal" if prob_normal > 0.5 else "Abnormal"
+        print(f"         诊断 → {diag_label} | Normal={prob_normal:.2%}")
 
-        # --- 第二级：疾病诊断 ---
-        d_interpreter.set_tensor(d_in_idx, input_tensor)
-        d_interpreter.invoke()
-        d_logits = d_interpreter.get_tensor(d_out_idx)[0]
-        
-        # 核心修正：应用 Softmax 得到 0-1 的置信度
-        d_probs = softmax(d_logits)
-        d_pred = np.argmax(d_probs)
-        
-        label = "Normal (正常)" if d_pred == 0 else "Abnormal (异常)"
-        confidence = d_probs[d_pred]
-        
-        print(f"片段 {i+1:02d}: ✨ [诊断通过] 结果: {label} | 置信度: {confidence:.2%}")
+        results.append((sqa_score, prob_normal))
 
-    print("="*60)
+    # ==========================================
+    # 汇总：SQA 加权平均
+    # ==========================================
+    print("\n" + "=" * 50)
 
-    # ========= 性能统计 =========
-    end_time = time.time()
-    end_mem = process.memory_info().rss / 1024**2  # MB
-    peak_mem = process.memory_info().rss / 1024**2
+    if not results:
+        print("⚠️  所有片段质量不足，无法诊断。")
+        return
 
-    total_time = end_time - start_time
+    weights           = [r[0] for r in results]
+    probs             = [r[1] for r in results]
+    final_prob_normal = sum(w * p for w, p in zip(weights, probs)) / sum(weights)
 
-    print("📊 性能统计:")
-    print(f"⏱ 总运行时间: {total_time:.2f} 秒")
-    print(f"💾 起始内存: {start_mem:.2f} MB")
-    print(f"💾 结束内存: {end_mem:.2f} MB")
-    print(f"📈 当前内存占用: {peak_mem:.2f} MB")
+    label      = "Normal" if final_prob_normal > 0.5 else "Abnormal"
+    confidence = final_prob_normal if label == "Normal" else 1 - final_prob_normal
 
-    print("✅ 离线验证任务圆满完成。")
+    print(f"✨ 最终诊断: {label} | 置信度: {confidence:.2%}")
+    print("=" * 50)
+
 
 if __name__ == "__main__":
     main()
