@@ -2,9 +2,9 @@
 record_debug.py — 录音 + 管道诊断工具
 
 功能：
-  1. 通过 BLE 从 ESP32 录制指定时长的音频
-  2. 保存原始 8000Hz WAV（raw）和降采样后 2000Hz WAV（downsampled）
-  3. 直接对降采样音频跑 SQA + 诊断，定位管道哪一环出问题
+  1. 通过 BLE 从 ESP32 录制指定时长的音频（ESP32 已在硬件侧输出 2000Hz）
+  2. 保存 2000Hz WAV
+  3. 直接对音频跑 SQA + 诊断，定位管道哪一环出问题
 
 用法：
   python record_debug.py           # 默认录 6 秒
@@ -26,11 +26,11 @@ if PROJECT_ROOT not in sys.path:
 
 from src.preprocess.preprocess_pipeline import preprocess_array_for_pi
 
-RECORD_DIR = os.path.join(PROJECT_ROOT, "record_wav")
+RECORD_DIR = os.path.join(PROJECT_ROOT, "WAV_record")
 
 
 def next_index():
-    """根据 record_wav/ 里已有文件自动确定下一个编号"""
+    """根据 WAV_record/ 里已有文件自动确定下一个编号"""
     os.makedirs(RECORD_DIR, exist_ok=True)
     existing = [f for f in os.listdir(RECORD_DIR) if f.endswith(".wav")]
     if not existing:
@@ -49,7 +49,7 @@ def next_index():
 # ==========================================
 ESP32_MAC           = "80:F1:B2:ED:B4:12"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-SAMPLE_RATE         = 8000
+SAMPLE_RATE         = 2000  # ESP32 已在硬件侧降采样至 2000Hz
 RECORD_DURATION     = int(sys.argv[1]) if len(sys.argv) > 1 else 6  # 秒
 SQA_THRESHOLD       = 0.5   # 调试时用宽松阈值，看真实得分
 
@@ -84,8 +84,7 @@ def save_wav(filepath, samples_int16, sample_rate):
 
 async def main():
     idx = next_index()
-    out_raw         = os.path.join(RECORD_DIR, f"{idx:03d}_raw.wav")
-    out_downsampled = os.path.join(RECORD_DIR, f"{idx:03d}_2k.wav")
+    out_2k = os.path.join(RECORD_DIR, f"{idx:03d}_2k.wav")
 
     # 加载配置和模型
     with open(os.path.join(PROJECT_ROOT, "config.yaml"), "r") as f:
@@ -132,54 +131,53 @@ async def main():
         return
 
     # ==========================================
-    # 保存原始 8000Hz WAV
+    # 保存 2000Hz WAV（ESP32 已在硬件侧降采样）
     # ==========================================
-    audio_8k = np.frombuffer(raw_bytes, dtype=np.int16)
-    save_wav(out_raw, audio_8k, SAMPLE_RATE)
+    audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
 
-    # ==========================================
-    # 降采样到 2000Hz 并保存
-    # ==========================================
-    audio_float = audio_8k.astype(np.float32) / 32768.0
-    audio_2k    = audio_float[::4]
-    audio_2k_int16 = (audio_2k * 32768).clip(-32768, 32767).astype(np.int16)
-    save_wav(out_downsampled, audio_2k_int16, 2000)
+    # 峰值归一化后保存，与推理时听感一致
+    audio_float_save = audio_int16.astype(np.float32)
+    max_val = np.max(np.abs(audio_float_save))
+    if max_val > 0:
+        audio_float_save = audio_float_save / max_val * 32767.0
+    save_wav(out_2k, audio_float_save.astype(np.int16), SAMPLE_RATE)
 
     # ==========================================
     # 按 2s 切片跑 SQA + 诊断
     # ==========================================
-    SEGMENT_SAMPLES = 2000 * 2  # 2s @ 2000Hz = 4000 samples
-    n_segments = len(audio_2k) // SEGMENT_SAMPLES
+    audio_float = audio_int16.astype(np.float32) / 32768.0
+    SEGMENT_SAMPLES = SAMPLE_RATE * 2  # 2s @ 2000Hz = 4000 samples
+    n_segments = len(audio_float) // SEGMENT_SAMPLES
     print(f"\n📊 共 {n_segments} 个 2s 片段，逐一诊断（SQA 阈值={SQA_THRESHOLD}）：")
     print("-" * 50)
 
     results = []
     for i in range(n_segments):
-        seg = audio_2k[i * SEGMENT_SAMPLES: (i + 1) * SEGMENT_SAMPLES]
-        tensor = preprocess_array_for_pi(seg, config)
+        seg = audio_float[i * SEGMENT_SAMPLES: (i + 1) * SEGMENT_SAMPLES]
+        tensors = preprocess_array_for_pi(seg, config)
 
-        q_interp.set_tensor(q_in, tensor)
-        q_interp.invoke()
-        q_probs   = softmax(q_interp.get_tensor(q_out)[0])
-        sqa_score = q_probs[1]
-        print(f"片段 {i+1:02d}: SQA → Poor={q_probs[0]:.2%} | Good={sqa_score:.2%}", end="")
+        for j, tensor in enumerate(tensors):
+            q_interp.set_tensor(q_in, tensor)
+            q_interp.invoke()
+            q_probs   = softmax(q_interp.get_tensor(q_out)[0])
+            sqa_score = q_probs[1]
+            print(f"片段 {i+1:02d}-{j+1}: SQA → Poor={q_probs[0]:.2%} | Good={sqa_score:.2%}", end="")
 
-        if sqa_score < SQA_THRESHOLD:
-            print("  ⚠️  跳过")
-            continue
+            if sqa_score < SQA_THRESHOLD:
+                print("  ⚠️  跳过")
+                continue
 
-        d_interp.set_tensor(d_in, tensor)
-        d_interp.invoke()
-        d_probs     = softmax(d_interp.get_tensor(d_out)[0])
-        prob_normal = d_probs[0]
-        print(f"  → {'Normal' if prob_normal > 0.5 else 'Abnormal'} ({prob_normal:.2%})")
-        results.append((sqa_score, prob_normal))
+            d_interp.set_tensor(d_in, tensor)
+            d_interp.invoke()
+            d_probs     = softmax(d_interp.get_tensor(d_out)[0])
+            prob_normal = d_probs[0]
+            print(f"  → {'Normal' if prob_normal > 0.5 else 'Abnormal'} ({prob_normal:.2%})")
+            results.append((sqa_score, prob_normal))
 
     print("\n" + "=" * 50)
     if not results:
         print("⚠️  所有片段 SQA 不足。")
-        print(f"\n建议：把 {os.path.basename(out_raw)} 或 {os.path.basename(out_downsampled)}")
-        print("用音频软件打开，听一下信号质量是否正常。")
+        print(f"\n建议：把 {os.path.basename(out_2k)} 用音频软件打开，听一下信号质量是否正常。")
     else:
         weights           = [r[0] for r in results]
         probs             = [r[1] for r in results]

@@ -13,14 +13,12 @@
 #define I2S_MIC_BCK 4
 #define I2S_PORT I2S_NUM_0
 
-// --- 算法参数优化 ---
-float filtered_val = 0;      
-const float alpha = 0.05;    // 低通滤波系数，保留 20-400Hz 关键心音
-const int digital_gain = 30; // 数字增益倍数
-
 // 音频参数
-#define SAMPLE_RATE 8000 
-#define BLOCK_SIZE 128   // 蓝牙单次包大小 (Bytes)
+#define SAMPLE_RATE     8000  // I2S 采样率（受 INMP441 SCK 下限约束，不可低于此值）
+#define OUTPUT_RATE     2000  // BLE 输出采样率（模型输入要求）
+#define DECIMATE        4     // 降采样倍数 SAMPLE_RATE / OUTPUT_RATE
+#define BLOCK_SIZE      128   // I2S DMA 缓冲区大小（字节）
+#define OUT_BLOCK_BYTES 128   // BLE 单包大小（字节）= 64 samples @ 2000Hz
 
 // BLE UUID
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -32,20 +30,33 @@ BLECharacteristic *pCharacteristic = NULL;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
-// 音频缓冲区 (16bit = 2 bytes)
-int16_t sBuffer[BLOCK_SIZE / 2]; 
+// I2S 输入缓冲（64 samples @ 8000Hz）
+int16_t sBuffer[BLOCK_SIZE / 2];
+
+// BLE 输出缓冲（64 samples @ 2000Hz）
+int16_t outBuffer[OUT_BLOCK_BYTES / 2];
+int outIndex = 0;
+
+// 抗混叠 LPF 状态（2 阶 IIR 级联）
+// alpha = 1 - exp(-2π * fc / fs)，fc=800Hz, fs=8000Hz → alpha ≈ 0.47
+// 截止 ~800Hz，Nyquist（1000Hz）处衰减约 -7.6dB，足以抑制心音频段外混叠
+float lpf1 = 0.0f;
+float lpf2 = 0.0f;
+const float LPF_ALPHA = 0.47f;
+
+// 抽取计数器
+int decimateCount = 0;
 
 // ================= 2. 辅助函数 =================
 
-// 直流去除算法：通过滑动平均计算直流偏置并扣除
+// 直流去除：滑动平均估计直流偏置并扣除
 int16_t remove_dc_offset(int16_t sample) {
     static long long sum = 0;
     static int count = 0;
     static const int WINDOW_SIZE = 1000;
-    
     sum += sample;
     count++;
-    if(count > WINDOW_SIZE) {
+    if (count > WINDOW_SIZE) {
         sum -= (sum / WINDOW_SIZE);
         count = WINDOW_SIZE;
     }
@@ -63,7 +74,7 @@ void i2s_install() {
         .communication_format = I2S_COMM_FORMAT_I2S,
         .intr_alloc_flags = 0,
         .dma_buf_count = 8,
-        .dma_buf_len = BLOCK_SIZE, 
+        .dma_buf_len = BLOCK_SIZE,
         .use_apll = false
     };
     i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
@@ -79,15 +90,12 @@ void i2s_setpin() {
     i2s_set_pin(I2S_PORT, &pin_config);
 }
 
-// BLE 服务器回调类：处理连接和连接速度优化
+// BLE 回调：处理连接与连接速度优化
 class MyServerCallbacks : public BLEServerCallbacks {
-    // 修复报错：使用带 param 的 onConnect 从而获取对方 MAC 地址
     void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t *param) {
         deviceConnected = true;
-        // 关键优化：连接成功后立即请求提速 (间隔 7.5ms - 15ms)
         pServer->updateConnParams(param->connect.remote_bda, 6, 12, 0, 100);
     };
-
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
     }
@@ -96,93 +104,77 @@ class MyServerCallbacks : public BLEServerCallbacks {
 // ================= 3. 主程序 =================
 
 void setup() {
-  Serial.begin(115200);
-  Serial.println("Starting BLE Stethoscope...");
+    Serial.begin(115200);
+    Serial.println("Starting BLE Stethoscope...");
 
-  // 初始化硬件 I2S
-  i2s_install();
-  i2s_setpin();
-  i2s_start(I2S_PORT);
+    i2s_install();
+    i2s_setpin();
+    i2s_start(I2S_PORT);
 
-  // 初始化蓝牙
-  BLEDevice::init("ESP32_Steth"); 
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+    BLEDevice::init("ESP32_Steth");
+    pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
 
-  // 创建服务和特征
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-  pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ   |
-                      BLECharacteristic::PROPERTY_WRITE  |
-                      BLECharacteristic::PROPERTY_NOTIFY |
-                      BLECharacteristic::PROPERTY_INDICATE
-                    );
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+    pCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID,
+        BLECharacteristic::PROPERTY_READ   |
+        BLECharacteristic::PROPERTY_WRITE  |
+        BLECharacteristic::PROPERTY_NOTIFY |
+        BLECharacteristic::PROPERTY_INDICATE
+    );
+    pCharacteristic->addDescriptor(new BLE2902());
+    pService->start();
 
-  pCharacteristic->addDescriptor(new BLE2902());
-  pService->start();
-
-  // 开始广播
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x0);
-  BLEDevice::startAdvertising();
-  Serial.println("Waiting for connection...");
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(false);
+    pAdvertising->setMinPreferred(0x0);
+    BLEDevice::startAdvertising();
+    Serial.println("Waiting for connection...");
 }
 
 void loop() {
     size_t bytesIn = 0;
-    // 从 I2S 读取原始数据
     esp_err_t result = i2s_read(I2S_PORT, &sBuffer, sizeof(sBuffer), &bytesIn, portMAX_DELAY);
 
     if (result == ESP_OK && bytesIn > 0) {
         int samples_read = bytesIn / 2;
 
-        // 音频数字信号处理 (DSP)
         for (int i = 0; i < samples_read; ++i) {
             // 1. 去直流
-            int16_t current_sample = remove_dc_offset(sBuffer[i]);
-            
-            // 2. 低通滤波
-            filtered_val = (filtered_val * (1.0 - alpha)) + (current_sample * alpha);
-            
-            // 3. 数字增益
-            int32_t amplified = (int32_t)(filtered_val * digital_gain);
+            float x = (float)remove_dc_offset(sBuffer[i]);
 
-   //         if (amplified < 800 && amplified > -800) { 
-   //     amplified = 0; 
-   // } 
-   // else {
-        // 如果有信号，稍微减去一点固定底噪，让波形从 0 开始起步
-    //    if(amplified > 0) amplified -= 800;
-    //    else amplified += 800;
-   // }
+            // 2. 抗混叠低通滤波（2 阶 IIR 级联，截止 ~800Hz @ 8000Hz）
+            lpf1 = LPF_ALPHA * x    + (1.0f - LPF_ALPHA) * lpf1;
+            lpf2 = LPF_ALPHA * lpf1 + (1.0f - LPF_ALPHA) * lpf2;
 
-    // 5. 限幅保护
-    if (amplified > 32000) amplified = 32000;
-    else if (amplified < -32000) amplified = -32000;
+            // 3. 4:1 抽取：每 4 个样本保留 1 个
+            decimateCount++;
+            if (decimateCount >= DECIMATE) {
+                decimateCount = 0;
+                outBuffer[outIndex++] = (int16_t)lpf2;
 
-            sBuffer[i] = (int16_t)amplified;
-        }
-
-        // 蓝牙发送音频流
-        if (deviceConnected) {
-            pCharacteristic->setValue((uint8_t*)sBuffer, bytesIn);
-            pCharacteristic->notify();
-            
+                // 4. 输出缓冲满 64 samples → BLE 发送
+                if (outIndex >= OUT_BLOCK_BYTES / 2) {
+                    outIndex = 0;
+                    if (deviceConnected) {
+                        pCharacteristic->setValue((uint8_t*)outBuffer, OUT_BLOCK_BYTES);
+                        pCharacteristic->notify();
+                    }
+                }
+            }
         }
         Serial.println(sBuffer[0]);
     }
-    
+
     // 连接状态管理
     if (!deviceConnected && oldDeviceConnected) {
-        delay(500); 
-        pServer->startAdvertising(); 
+        delay(500);
+        pServer->startAdvertising();
         Serial.println("Re-advertising...");
         oldDeviceConnected = deviceConnected;
     }
-    
     if (deviceConnected && !oldDeviceConnected) {
         Serial.println("Device Connected");
         oldDeviceConnected = deviceConnected;

@@ -57,7 +57,24 @@
 
 ---
 
-## 二、Pi 端已知参数（来源：ble_debug 模式2 / 实测）
+## 二、麦克风硬件参数（INMP441 MEMS Microphone）
+
+| 参数 | 值 |
+|---|---|
+| 接口 | Digital I²S |
+| 位深 | 24-bit（ESP32 配置为 16-bit 接收） |
+| SNR | 61 dBA |
+| 灵敏度 | -26 dBFS |
+| 频率响应 | 60 Hz – 15 kHz（平坦） |
+| 功耗 | 1.4 mA |
+| PSR | -75 dBFS |
+| 封装 | 4.72 × 3.76 × 1 mm SMD |
+
+> 注：INMP441 原生输出 24-bit，但 arduino.c 中 I2S 配置为 `I2S_BITS_PER_SAMPLE_16BIT`，ESP32 会截断低位，实际传输为 16-bit。
+
+---
+
+## 三、Pi 端已知参数（来源：ble_debug 模式2 / 实测）
 
 ### GATT 服务结构
 | 顺序 | 服务 | UUID | 说明 |
@@ -90,7 +107,7 @@
 
 ---
 
-## 三、HCI 层参数（来源：sudo btmon + ble_debug 模式3）
+## 四、HCI 层参数（来源：sudo btmon + ble_debug 模式3）
 
 ### 实际协商连接参数（每次连接均一致）
 | 参数 | HCI 实测值 | 说明 |

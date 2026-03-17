@@ -20,3 +20,5 @@ pybluez2-0.46/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+.wav

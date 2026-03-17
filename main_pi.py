@@ -23,11 +23,12 @@ from src.preprocess.preprocess_pipeline import preprocess_array_for_pi
 ESP32_MAC           = "80:F1:B2:ED:B4:12"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-SAMPLE_RATE         = 8000
+SAMPLE_RATE         = 2000
 SEGMENT_DURATION    = 2     # 每次采集秒数
 COLLECTION_INTERVAL = 30    # 两次采集之间的间隔（秒）
 NUM_COLLECTIONS     = 3     # 总采集次数
-SQA_THRESHOLD       = 0.9   # SQA 低于此值丢弃片段
+SQA_THRESHOLD       = 0.8
+   # SQA 低于此值丢弃片段
 
 SEGMENT_BYTES = SAMPLE_RATE * 2 * SEGMENT_DURATION  # 每段字节数 = 8000
 
@@ -113,33 +114,33 @@ async def main():
                 raw = await collect_segment()
                 raw_segments.append(raw)
 
-                # 转换为 float32 numpy array，并降采样 8000Hz → 2000Hz
+                # 转换为 float32 numpy array（ESP32 已在硬件侧降采样至 2000Hz）
                 audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-                audio = audio[::4]     
 
-                # 预处理 → mel tensor (1, 1, 32, 64)
-                tensor = preprocess_array_for_pi(audio, config)
+                # 预处理 → list of mel tensors (1, 1, 32, 64)
+                tensors = preprocess_array_for_pi(audio, config)
 
-                # 第一级：SQA 质量评估
-                q_interp.set_tensor(q_in, tensor)
-                q_interp.invoke()
-                q_probs   = softmax(q_interp.get_tensor(q_out)[0])
-                sqa_score = q_probs[1]  # index 1 = Good Quality
-                print(f"   SQA → Poor={q_probs[0]:.2%} | Good={sqa_score:.2%}")
+                for j, tensor in enumerate(tensors):
+                    # 第一级：SQA 质量评估
+                    q_interp.set_tensor(q_in, tensor)
+                    q_interp.invoke()
+                    q_probs   = softmax(q_interp.get_tensor(q_out)[0])
+                    sqa_score = q_probs[1]  # index 1 = Good Quality
+                    print(f"   [{j+1}/{len(tensors)}] SQA → Poor={q_probs[0]:.2%} | Good={sqa_score:.2%}")
 
-                if sqa_score < SQA_THRESHOLD:
-                    print(f"   ⚠️  质量不足，跳过此片段")
-                    continue
+                    if sqa_score < SQA_THRESHOLD:
+                        print(f"   ⚠️  质量不足，跳过")
+                        continue
 
-                # 第二级：诊断模型
-                d_interp.set_tensor(d_in, tensor)
-                d_interp.invoke()
-                d_probs     = softmax(d_interp.get_tensor(d_out)[0])
-                prob_normal = d_probs[0]  # index 0 = Normal
-                diag_label  = "Normal" if prob_normal > 0.5 else "Abnormal"
-                print(f"   诊断 → {diag_label} | Normal={prob_normal:.2%}")
+                    # 第二级：诊断模型
+                    d_interp.set_tensor(d_in, tensor)
+                    d_interp.invoke()
+                    d_probs     = softmax(d_interp.get_tensor(d_out)[0])
+                    prob_normal = d_probs[0]  # index 0 = Normal
+                    diag_label  = "Normal" if prob_normal > 0.5 else "Abnormal"
+                    print(f"   诊断 → {diag_label} | Normal={prob_normal:.2%}")
 
-                results.append((sqa_score, prob_normal))
+                    results.append((sqa_score, prob_normal))
 
             await client.stop_notify(CHARACTERISTIC_UUID)
 

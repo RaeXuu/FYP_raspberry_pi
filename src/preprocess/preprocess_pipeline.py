@@ -53,25 +53,35 @@ def preprocess_wav_for_pi(wav_path, config):
 # 在 preprocess_pipeline.py 中添加
 def preprocess_array_for_pi(audio_array, config):
     """
-    专门为蓝牙实时流设计：不再读取文件，直接处理内存中的 numpy 数组
-    audio_array: 形状为 (4000,) 的 2 秒音频数据
+    专门为蓝牙实时流设计：不再读取文件，直接处理内存中的 numpy 数组。
+    支持任意长度输入，内部切片（不足补零），与 preprocess_wav_for_pi 完全对齐。
+    返回: list of numpy arrays, 每个形状为 (1, 1, 32, 64)
     """
     sr = config["data"]["sample_rate"]
     mel_cfg = config["mel"]
-    
-    # 直接滤波，跳过 load_wav
+
+    # 峰值归一化，对齐 load_wav 的行为（训练时每段峰值=1.0）
+    max_val = np.max(np.abs(audio_array))
+    if max_val > 0:
+        audio_array = audio_array / max_val
+
+    # 带通滤波
     y_filtered = apply_bandpass(audio_array, fs=sr, lowcut=25, highcut=400)
-    
-    # 提取 Mel 频谱
-    mel = logmel_fixed_size(
-        y=y_filtered,
-        sr=sr,
-        mel_cfg=mel_cfg,
-        target_shape=(mel_cfg["n_mels"], 64), 
-    )
-    
-    # 升维适配 TFLite (1, 1, 32, 64)
-    return mel[np.newaxis, np.newaxis, ...].astype(np.float32)
+
+    # 切片（不足一片时补零）
+    segments = segment_audio(y_filtered, sr=sr)
+
+    processed_segments = []
+    for seg in segments:
+        mel = logmel_fixed_size(
+            y=seg,
+            sr=sr,
+            mel_cfg=mel_cfg,
+            target_shape=(mel_cfg["n_mels"], 64),
+        )
+        processed_segments.append(mel[np.newaxis, np.newaxis, ...].astype(np.float32))
+
+    return processed_segments
 
 if __name__ == "__main__":
     # 快速自测逻辑
