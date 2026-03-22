@@ -16,11 +16,11 @@ from src.preprocess.preprocess_pipeline import preprocess_wav_for_pi
 # ==========================================
 # 配置（与 main_pi.py 保持一致）
 # ==========================================
-SQA_THRESHOLD = 0.9
+SQA_THRESHOLD = 0.6
 
 TEST_WAV = os.path.join(
     PROJECT_ROOT,
-    "data/raw/Dataset2/training-a/heart_sound_1770104436_processed.wav"
+    "/home/rasp4b/FypPi/debug_records/normal_c0003_1774172292.wav"
 )
 
 
