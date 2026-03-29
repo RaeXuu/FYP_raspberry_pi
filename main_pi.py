@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import os
 import signal
 import sys
@@ -30,6 +31,7 @@ SEG_DURATION   = 2.0    # 滑动窗口长度（秒），与训练对齐
 OVERLAP        = 0.5    # 50% overlap，与训练对齐
 CHUNK_DURATION = 20     # 每块采集时长（秒）
 SQA_THRESHOLD  = 0.6
+DIAG_THRESHOLD = 0.5   # prob_normal 高于此值判为 Normal
 
 SEG_SAMPLES   = int(SAMPLE_RATE * SEG_DURATION)      # 4000 samples
 HOP_SAMPLES   = int(SEG_SAMPLES * (1 - OVERLAP))     # 2000 samples（1s）
@@ -38,6 +40,7 @@ CHUNK_BYTES   = CHUNK_SAMPLES * 2                    # 80000 bytes（int16）
 # 每块窗口数：(40000 - 4000) / 2000 + 1 
 
 RECORDS_DIR = os.path.join(PROJECT_ROOT, "debug_records")
+LOG_PATH    = os.path.join(RECORDS_DIR, "inference_log.csv")
 
 # ==========================================
 # 全局接收状态
@@ -95,9 +98,10 @@ def notification_handler(sender, data):
 def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
                   q_in, q_out, d_in, d_out):
     """
-    对一块 15s 原始 int16 字节做滑动窗口推理。
-    返回: (label, confidence, valid_count, total_windows)
+    对一块原始 int16 字节做滑动窗口推理。
+    返回: (label, avg_prob, valid_count, total_windows, window_data)
            label 为 None 表示全部低质量（信号差）
+           window_data: [(win_idx, sqa_score, sqa_pass, prob_normal or None), ...]
     """
     audio = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
@@ -105,6 +109,7 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
     filtered = apply_bandpass(audio, fs=SAMPLE_RATE, lowcut=25, highcut=400)
 
     valid_results  = []   # [(sqa_score, prob_normal), ...]
+    window_data    = []   # [(win_idx, sqa_score, passed, prob_normal or None), ...]
     total_windows  = int((CHUNK_SAMPLES - SEG_SAMPLES) / HOP_SAMPLES) + 1
     sqa_line       = []
 
@@ -134,6 +139,7 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
             sqa_line = []
 
         if not passed:
+            window_data.append((win_idx + 1, sqa_score, False, None))
             continue
 
         # 诊断
@@ -143,17 +149,17 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
         prob_normal = float(d_probs[0])
 
         valid_results.append((sqa_score, prob_normal))
+        window_data.append((win_idx + 1, sqa_score, True, prob_normal))
 
     if not valid_results:
-        return None, None, 0, total_windows
+        return None, None, 0, total_windows, window_data
 
     weights  = [r[0] for r in valid_results]
     probs    = [r[1] for r in valid_results]
     avg_prob = sum(w * p for w, p in zip(weights, probs)) / sum(weights)
-    label    = "Normal" if avg_prob > 0.5 else "Abnormal"
-    confidence = avg_prob if label == "Normal" else 1 - avg_prob
+    label    = "Normal" if avg_prob > DIAG_THRESHOLD else "Abnormal"
 
-    return label, confidence, len(valid_results), total_windows
+    return label, avg_prob, len(valid_results), total_windows, window_data
 
 
 # ==========================================
@@ -161,6 +167,17 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
 # ==========================================
 async def inference_worker(mel_cfg, q_interp, d_interp,
                             q_in, q_out, d_in, d_out):
+    tally = {"Normal": 0, "Abnormal": 0, "noise": 0}
+
+    # 初始化 CSV（文件不存在时写表头）
+    write_header = not os.path.exists(LOG_PATH)
+    log_file = open(LOG_PATH, "a", newline="")
+    writer = csv.writer(log_file)
+    if write_header:
+        writer.writerow(["time", "chunk_idx", "win_idx",
+                         "sqa_score", "sqa_pass", "prob_normal",
+                         "chunk_label", "chunk_prob_normal"])
+
     while True:
         # 有块就处理，没块就等 1s；_running=False 且队列空时退出
         try:
@@ -174,27 +191,56 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
 
         print(f"\n[块 {chunk_idx:03d}] 推理中（{CHUNK_DURATION}s / {CHUNK_SAMPLES//HOP_SAMPLES - 1} 窗口）...")
 
-        label, confidence, valid_count, total_windows = await asyncio.to_thread(
+        label, avg_prob, valid_count, total_windows, window_data = await asyncio.to_thread(
             run_inference, raw_bytes, mel_cfg,
             q_interp, d_interp, q_in, q_out, d_in, d_out
         )
 
+        chunk_time = time.strftime("%Y-%m-%d %H:%M:%S")
+
         if label is None:
+            tally["noise"] += 1
             filename = save_wav(raw_bytes, chunk_idx, "noise")
             print(f"[块 {chunk_idx:03d}]  信号差（0/{total_windows} 窗口通过 SQA）")
             print(f"[块 {chunk_idx:03d}]  已保存: {filename}")
         elif label == "Normal":
+            tally["Normal"] += 1
             filename = save_wav(raw_bytes, chunk_idx, "normal")
-            print(f"[块 {chunk_idx:03d}]  Normal     置信度 {confidence:.2%}"
+            print(f"[块 {chunk_idx:03d}]  Normal     prob_normal={avg_prob:.2%}"
                   f"  ({valid_count}/{total_windows} 窗口有效）")
             print(f"[块 {chunk_idx:03d}]  已保存: {filename}")
         else:
+            tally["Abnormal"] += 1
             filename = save_wav(raw_bytes, chunk_idx, "abnormal")
-            print(f"[块 {chunk_idx:03d}]  Abnormal   置信度 {confidence:.2%}"
+            print(f"[块 {chunk_idx:03d}]  Abnormal   prob_normal={avg_prob:.2%}"
                   f"  ({valid_count}/{total_windows} 窗口有效）")
             print(f"[块 {chunk_idx:03d}]  已保存: {filename}")
 
+        # 写每个窗口的数据到 CSV
+        for win_idx, sqa_score, sqa_pass, prob_normal in window_data:
+            writer.writerow([
+                chunk_time, chunk_idx, win_idx,
+                f"{sqa_score:.4f}", sqa_pass,
+                f"{prob_normal:.4f}" if prob_normal is not None else "",
+                label if label is not None else "noise",
+                f"{avg_prob:.4f}" if avg_prob is not None else ""
+            ])
+        log_file.flush()
+
         _chunk_queue.task_done()
+
+    log_file.close()
+
+    total = sum(tally.values())
+    print("\n" + "=" * 50)
+    if total == 0:
+        print("未采集到任何数据。")
+    else:
+        print(f"最终统计: 共 {total} 块")
+        print(f"  Normal   {tally['Normal']} 块")
+        print(f"  Abnormal {tally['Abnormal']} 块")
+        print(f"  低质量    {tally['noise']} 块（全部窗口未通过 SQA）")
+    print("=" * 50)
 
 
 # ==========================================
@@ -247,8 +293,6 @@ async def main():
 
         await client.stop_notify(CHARACTERISTIC_UUID)
         await worker   # 等最后一块处理完
-
-    print("已停止。")
 
 
 if __name__ == "__main__":
