@@ -36,11 +36,11 @@
 | 外设 | BCM 编号 | 物理 Pin | 说明 |
 |---|---|---|---|
 | 风扇 VCC（已接） | — | Pin 2 (5V) | 占用，勿动 |
-| 风扇 GND（已接） | — | Pin 6 (GND) | 占用，勿动 |
+| 风扇 GND（已接） | — | Pin 9 (GND) | 占用，勿动 |
 | OLED SCL | GPIO3 | Pin 5 | I2C1 SCL |
 | OLED SDA | GPIO2 | Pin 3 | I2C1 SDA |
 | OLED VCC | — | Pin 1 (3.3V) | — |
-| OLED GND | — | Pin 9 (GND) | — |
+| OLED GND | — | Pin 6 (GND) | — |
 | LED | GPIO17 | Pin 11 | 串联 330Ω 限流电阻 |
 | LED GND | — | Pin 14 (GND) | — |
 | 按键 | GPIO27 | Pin 13 | 内部上拉，另一端接 GND |
@@ -59,6 +59,7 @@
 └───────────────────┬──────────────────────────────────────────────┘
                     │
 ┌───────────────────▼──────────────────────────────────────────────┐
+│                Raspberry Pi 4B（推理端）                          │
 │                Raspberry Pi 4B（推理端）                          │
 │                                                                   │
 │  [BLE接收] → [预处理] → [TFLite推理] → [结果管理] → [上报]      │
@@ -121,38 +122,46 @@
 
 > **目标**：无屏幕、无键盘也能独立操作，适合便携场景。
 
-### 3.1 物理按键
-| 按键 | 短按 | 长按（3s） |
-|---|---|---|
-| BTN_START | 触发一次完整采集（3块×2s） | 关机 |
-| BTN_RESULT | 播报/显示最近一次结果 | 清除历史记录 |
+### 3.1 物理按键（已实现）
 
-- 接 GPIO，使用内部上拉，软件消抖（5ms）
-- 实现文件：`src/ui/button.py`
+- **实现文件**：`src/ui/button.py`
+- **硬件**：GPIO27，内部上拉，另一端接 GND
+- **消抖**：软件消抖 20ms
+- **长按判定**：≥ 3.0s
 
-### 3.2 LED 状态指示
-| 状态 | 指示 |
+| 操作 | 动作 |
 |---|---|
-| 空闲 | 绿色慢闪（1Hz） |
-| BLE 连接中 | 蓝色快闪（4Hz） |
-| 采集中 | 蓝色常亮 |
-| 推理中 | 黄色呼吸 |
-| 结果 Normal | 绿色亮 3s |
-| 结果 Abnormal | 红色亮 5s + 蜂鸣 |
-| 错误 | 红色快闪 |
+| 短按（待机时） | 启动一次采集会话（BLE 连接 → 流式推理） |
+| 短按（采集中） | 停止当前采集会话 |
+| 长按 3s | OLED 显示"关机中..." → `sudo shutdown -h now` |
 
-- 使用单颗 RGB LED（共阴），GPIO PWM 驱动
-- 实现文件：`src/ui/led.py`
+- 回调支持 async 和普通函数
+- `btn.start()` 以 asyncio task 在事件循环中运行，`btn.stop()` 取消 task 并清理 GPIO
 
-### 3.3 蜂鸣器（可选）
-- 无源蜂鸣器，GPIO PWM 控制频率
-- 仅在结果 Abnormal 或系统错误时鸣响，不干扰采集
-- 实现文件：`src/ui/buzzer.py`
+### 3.2 OLED 显示屏（已实现）
 
-### 3.4 OLED 显示屏（可选扩展）
-- SSD1306 128×32，I2C 接口
-- 显示内容：当前状态、最近结果、电量
-- 库：`luma.oled`
+- **实现文件**：`src/display/oled.py`
+- **硬件**：SSD1306 128×32，I2C 接口（port=1，address=0x3C）
+- **库**：`luma.oled`（`luma.core` + `luma.oled`）
+- 内部使用 `threading.Lock` 保证线程安全
+
+| 方法 | 显示内容 | 触发时机 |
+|---|---|---|
+| `show_boot()` | "Heart Sound / Diagnosis / v1.0" | 程序启动 |
+| `show_standby()` | "Heart Sound / Press to start" | 待机等待按键 |
+| `show_connecting(progress)` | "Connecting..." + 进度条（0.0–1.0） | BLE 连接中 |
+| `show_running(normal_pct, abnormal_pct, chunk_idx, last_label)` | 当前块编号 + Normal/Abnormal 实时概率 + 上次结果 | 每块推理中（窗口级更新） |
+| `show_error(msg)` | 错误信息 + "Retry: press btn" | BLE 连接失败 |
+| `show_text(msg)` | 任意单行文字 | 关机提示等 |
+
+### 3.3 LED 状态指示（未实现）
+- 规划使用单颗 RGB LED（共阴），GPIO PWM 驱动
+- 实现文件：`src/ui/led.py`（待实现）
+
+### 3.4 蜂鸣器（未实现）
+- 规划使用无源蜂鸣器，GPIO PWM 控制频率
+- 仅在结果 Abnormal 或系统错误时鸣响
+- 实现文件：`src/ui/buzzer.py`（待实现）
 
 ---
 
@@ -172,6 +181,7 @@
   {"ts": "2026-03-29T10:30:00", "label": "Normal", "prob_normal": 0.82, "valid_segs": 3, "total_segs": 3}
   ```
 - 便于后续统计和上报，不依赖 CSV 解析
+- **已实现**：`src/storage/summary.py` 提供 `append_summary(label, prob_normal, valid_segs, total_segs)`，在 `main_pi.py` 的 `inference_worker` 中每块推理完成后调用；`records/` 目录自动创建；信号差时 `label="noise"`，`prob_normal=null`
 
 ### 4.4 数据清理策略
 - 本地最多保留 30 天数据，超期自动删除
@@ -283,13 +293,13 @@ sudo systemctl restart heartbeat
 | 预处理流水线 | 已实现 | `src/preprocess/` |
 | TFLite 双模型推理 | 已实现 | SQA + 诊断 |
 | CSV 推理日志 | 已实现 | `debug_records/` |
-| 物理按键 | 未实现 | `src/ui/button.py` |
+| 物理按键 | 已实现 | `src/ui/button.py` |
 | LED 状态指示 | 未实现 | `src/ui/led.py` |
 | 蜂鸣器 | 未实现 | `src/ui/buzzer.py` |
-| OLED 显示 | 未实现（可选） | — |
-| 结果摘要 JSONL | 未实现 | `src/storage/` |
+| OLED 显示 | 已实现 | `src/display/oled.py` |
+| 结果摘要 JSONL | 已实现 | `src/storage/summary.py` |
 | 数据清理 | 未实现 | `src/storage/cleaner.py` |
 | 网络上报 | 未实现（可选） | `src/network/reporter.py` |
-| systemd 服务 | 未实现 | `deploy/heartbeat.service` |
-| 软件看门狗 | 未实现 | `src/watchdog.py` |
-| 安全关机 | 部分（SIGINT） | 需扩展按键长按 |
+| systemd 服务 | 已实现 | `deploy/heartbeat.service`，`deploy/install.sh` |
+| 软件看门狗 | 已实现 | `src/watchdog.py` + `deploy/watchdog.service` |
+| 安全关机 | 已实现（SIGINT + SIGTERM） | 按键长按关机依赖按键模块 |
