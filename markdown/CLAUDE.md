@@ -3,14 +3,11 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 系统定位
-这是一个**内存敏感、能耗敏感的边缘智能系统**，所有设计决策须以资源效率为优先。
+这是一个部署在边缘设备上的心音诊断系统。
 
-## 设备限制
-- **开发设备**：Raspberry Pi 4B（4GB 内存），当前用于开发调试
-- **最终部署设备**：Raspberry Pi Zero 2W（512MB 内存），通过 git 部署
-- 所有代码必须以 512MB 内存为约束目标编写，**不要安装不必要的依赖**（尤其是 matplotlib、scipy 等大型库）
-- 优先使用 Python 标准库或已有依赖（bleak、numpy、ai_edge_litert、yaml）
-- `src/receive.py` 目前使用了 `scipy`，属于遗留代码，不应在新代码中效仿
+## 设备
+- **开发 & 部署设备**：Raspberry Pi 4B（4GB 内存，64GB SD 卡）
+- 无内存或存储方面的特殊约束，可按需使用标准库和常见依赖
 
 ## 运行命令
 

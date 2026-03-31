@@ -19,6 +19,7 @@ if PROJECT_ROOT not in sys.path:
 
 from src.preprocess.filters import apply_bandpass
 from src.preprocess.mel import logmel_fixed_size
+from src.storage.summary import append_summary
 
 # ==========================================
 # 配置
@@ -163,6 +164,19 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
 
 
 # ==========================================
+# 看门狗心跳（每 30s 写时间戳到 /tmp/heartbeat.ts）
+# ==========================================
+HEARTBEAT_PATH     = "/tmp/heartbeat.ts"
+HEARTBEAT_INTERVAL = 30
+
+async def heartbeat_writer():
+    while _running:
+        with open(HEARTBEAT_PATH, "w") as f:
+            f.write(str(time.time()))
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+
+
+# ==========================================
 # 推理 worker（消费队列，一次处理一块）
 # ==========================================
 async def inference_worker(mel_cfg, q_interp, d_interp,
@@ -226,6 +240,7 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
                 f"{avg_prob:.4f}" if avg_prob is not None else ""
             ])
         log_file.flush()
+        append_summary(label, avg_prob, valid_count, total_windows)
 
         _chunk_queue.task_done()
 
@@ -273,6 +288,7 @@ async def main():
         _running = False
         print("\nCtrl+C — 等待当前块推理完成后退出...")
     loop.add_signal_handler(signal.SIGINT, handle_sigint)
+    loop.add_signal_handler(signal.SIGTERM, handle_sigint)
 
     print(f"正在连接 ESP32: {ESP32_MAC}...")
 
@@ -287,9 +303,12 @@ async def main():
             inference_worker(mel_cfg, q_interp, d_interp,
                              q_in, q_out, d_in, d_out)
         )
+        hb = asyncio.create_task(heartbeat_writer())
 
         while _running:
             await asyncio.sleep(0.1)
+
+        hb.cancel()
 
         await client.stop_notify(CHARACTERISTIC_UUID)
         await worker   # 等最后一块处理完
