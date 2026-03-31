@@ -1,6 +1,52 @@
 # 嵌入式系统模块规划
 
-本文档梳理整个心音诊断系统的完整模块构成，覆盖 ESP32（采集端）与 Raspberry Pi Zero 2W（推理端）两侧，以及系统集成所需的各类基础设施。
+本文档梳理整个心音诊断系统的完整模块构成，覆盖 ESP32（采集端）与 Raspberry Pi 4B（推理端）两侧，以及系统集成所需的各类基础设施。
+
+---
+
+## Raspberry Pi 4B GPIO 引脚表
+
+```
+       3V3  (1) (2)  5V       ← 风扇 VCC（已接）
+     GPIO2  (3) (4)  5V
+     GPIO3  (5) (6)  GND      ← 风扇 GND（已接）
+     GPIO4  (7) (8)  GPIO14
+       GND  (9) (10) GPIO15
+    GPIO17 (11) (12) GPIO18
+    GPIO27 (13) (14) GND
+    GPIO22 (15) (16) GPIO23
+       3V3 (17) (18) GPIO24
+    GPIO10 (19) (20) GND
+     GPIO9 (21) (22) GPIO25
+    GPIO11 (23) (24) GPIO8
+       GND (25) (26) GPIO7
+     GPIO0 (27) (28) GPIO1
+     GPIO5 (29) (30) GND
+     GPIO6 (31) (32) GPIO12
+    GPIO13 (33) (34) GND
+    GPIO19 (35) (36) GPIO16
+    GPIO26 (37) (38) GPIO20
+       GND (39) (40) GPIO21
+```
+
+> 编号说明：括号内为物理 Pin 编号（Board），`GPIOxx` 为 BCM 编号。代码中统一使用 BCM 编号。
+
+## GPIO 分配表
+
+| 外设 | BCM 编号 | 物理 Pin | 说明 |
+|---|---|---|---|
+| 风扇 VCC（已接） | — | Pin 2 (5V) | 占用，勿动 |
+| 风扇 GND（已接） | — | Pin 6 (GND) | 占用，勿动 |
+| OLED SCL | GPIO3 | Pin 5 | I2C1 SCL |
+| OLED SDA | GPIO2 | Pin 3 | I2C1 SDA |
+| OLED VCC | — | Pin 1 (3.3V) | — |
+| OLED GND | — | Pin 9 (GND) | — |
+| LED | GPIO17 | Pin 11 | 串联 330Ω 限流电阻 |
+| LED GND | — | Pin 14 (GND) | — |
+| 按键 | GPIO27 | Pin 13 | 内部上拉，另一端接 GND |
+| 按键 GND | — | Pin 9 (GND) | — |
+| 蜂鸣器 | GPIO22 | Pin 15 | 有源→普通输出，无源→PWM |
+| 蜂鸣器 GND | — | Pin 20 (GND) | — |
 
 ---
 
@@ -13,7 +59,7 @@
 └───────────────────┬──────────────────────────────────────────────┘
                     │
 ┌───────────────────▼──────────────────────────────────────────────┐
-│                Raspberry Pi Zero 2W（推理端）                     │
+│                Raspberry Pi 4B（推理端）                          │
 │                                                                   │
 │  [BLE接收] → [预处理] → [TFLite推理] → [结果管理] → [上报]      │
 │                                                                   │
@@ -106,8 +152,7 @@
 ### 3.4 OLED 显示屏（可选扩展）
 - SSD1306 128×32，I2C 接口
 - 显示内容：当前状态、最近结果、电量
-- 库：`luma.oled`（若内存允许），或直接操作 I2C 帧缓冲
-- **Zero 2W 内存紧张时可去掉此模块**
+- 库：`luma.oled`
 
 ---
 
@@ -130,14 +175,13 @@
 
 ### 4.4 数据清理策略
 - 本地最多保留 30 天数据，超期自动删除
-- WAV 文件大小上限：50MB（Zero 2W SD 卡容量有限）
 - 实现文件：`src/storage/cleaner.py`，由 systemd timer 每日触发
 
 ---
 
 ## 模块五：网络上报模块（可选）
 
-> Zero 2W 有板载 WiFi，可在有网环境下上报结果。
+> Pi 4B 有板载 WiFi，可在有网环境下上报结果。
 
 ### 5.1 上报触发时机
 - 每次采集完成后尝试上报（非阻塞，失败不影响本地记录）
@@ -183,7 +227,7 @@ WantedBy=multi-user.target
 
 ### 6.3 日志管理
 - 使用 Python `logging` 模块，级别 INFO，文件 `logs/app.log`
-- `RotatingFileHandler`：单文件最大 1MB，保留 3 份（Zero 2W 省空间）
+- `RotatingFileHandler`：单文件最大 5MB，保留 5 份
 - 错误级别同时打印到 stderr（便于 journald 捕获）
 
 ### 6.4 异常恢复
@@ -192,7 +236,6 @@ WantedBy=multi-user.target
 | BLE 断连 | 自动重连，指数退避（1s → 2s → 4s，上限 30s） |
 | TFLite 推理失败 | 跳过当前块，记录错误，继续下一块 |
 | 队列积压 | 丢弃最旧块，保留最新数据（已实现） |
-| 内存耗尽 | OOM killer 触发前由看门狗重启 |
 
 ---
 
@@ -200,11 +243,9 @@ WantedBy=multi-user.target
 
 ### 7.1 代码部署
 ```bash
-# Zero 2W 上执行
 git pull origin main
 sudo systemctl restart heartbeat
 ```
-- Zero 2W 本身不开发，通过 git 从 Pi 4B 同步
 
 ### 7.2 模型更新
 - 新模型文件放入项目根目录，命名不变（`*_quant.tflite`）
@@ -219,17 +260,12 @@ sudo systemctl restart heartbeat
 ## 模块八：电源管理（Pi 端）
 
 ### 8.1 供电方案
-- **有线**：5V/2.5A USB-C（开发调试）
+- **有线**：5V/3A USB-C
 - **便携**：5V 移动电源（UPS HAT 可实现不间断供电）
-- Zero 2W 峰值功耗约 1.3W，正常工作约 0.7W
+- Pi 4B 峰值功耗约 6W，正常工作约 3–4W
 
 ### 8.2 软件节能
 - 推理空闲时（等待 BLE 数据）：asyncio 事件循环自然休眠，CPU 占用低
-- 禁用不需要的外设（HDMI、USB hub）：写入 `/boot/config.txt`
-  ```
-  dtoverlay=disable-wifi   # 无需WiFi时
-  hdmi_blanking=2
-  ```
 - 可选：采集完成后通过 `systemctl suspend` 进入待机，按键唤醒
 
 ### 8.3 安全关机
@@ -250,7 +286,7 @@ sudo systemctl restart heartbeat
 | 物理按键 | 未实现 | `src/ui/button.py` |
 | LED 状态指示 | 未实现 | `src/ui/led.py` |
 | 蜂鸣器 | 未实现 | `src/ui/buzzer.py` |
-| OLED 显示 | 未实现（可选） | 内存允许再加 |
+| OLED 显示 | 未实现（可选） | — |
 | 结果摘要 JSONL | 未实现 | `src/storage/` |
 | 数据清理 | 未实现 | `src/storage/cleaner.py` |
 | 网络上报 | 未实现（可选） | `src/network/reporter.py` |
