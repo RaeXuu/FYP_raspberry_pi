@@ -1,0 +1,14 @@
+[Unit]
+Description=Heart Sound Diagnostic Service
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+User=rasp4b
+WorkingDirectory=/home/rasp4b/FypPi
+ExecStart=/home/rasp4b/FypPi/.venv/bin/python main_pi.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

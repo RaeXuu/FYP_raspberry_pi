@@ -1,0 +1,14 @@
+[Unit]
+Description=Heart Sound Watchdog
+After=heartbeat.service
+Requires=heartbeat.service
+
+[Service]
+User=root
+WorkingDirectory=/home/rasp4b/FypPi
+ExecStart=/home/rasp4b/FypPi/.venv/bin/python src/watchdog.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

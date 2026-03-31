@@ -19,6 +19,11 @@ if PROJECT_ROOT not in sys.path:
 
 from src.preprocess.filters import apply_bandpass
 from src.preprocess.mel import logmel_fixed_size
+from src.storage.summary import append_summary
+from src.display.oled import OLEDDisplay
+from src.ui.button import Button
+
+oled = OLEDDisplay()
 
 # ==========================================
 # 配置
@@ -46,9 +51,10 @@ LOG_PATH    = os.path.join(RECORDS_DIR, "inference_log.csv")
 # 全局接收状态
 # ==========================================
 _recv_buf    = bytearray()
-_chunk_queue = None   # asyncio.Queue，在 main() 中初始化
+_chunk_queue = None   # asyncio.Queue，在 run_session() 中初始化
 _running     = True
 _chunk_count = 0
+_exit        = False
 
 
 # ==========================================
@@ -96,7 +102,7 @@ def notification_handler(sender, data):
 # 推理函数（在 to_thread 中运行，不阻塞事件循环）
 # ==========================================
 def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
-                  q_in, q_out, d_in, d_out):
+                  q_in, q_out, d_in, d_out, on_window=None, chunk_idx=0, last_label=None):
     """
     对一块原始 int16 字节做滑动窗口推理。
     返回: (label, avg_prob, valid_count, total_windows, window_data)
@@ -151,6 +157,12 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
         valid_results.append((sqa_score, prob_normal))
         window_data.append((win_idx + 1, sqa_score, True, prob_normal))
 
+        if on_window is not None and valid_results:
+            weights = [r[0] for r in valid_results]
+            probs   = [r[1] for r in valid_results]
+            avg     = sum(w * p for w, p in zip(weights, probs)) / sum(weights)
+            on_window(avg * 100, (1 - avg) * 100, chunk_idx, last_label)
+
     if not valid_results:
         return None, None, 0, total_windows, window_data
 
@@ -163,20 +175,26 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
 
 
 # ==========================================
+# 看门狗心跳（每 30s 写时间戳到 /tmp/heartbeat.ts）
+# ==========================================
+HEARTBEAT_PATH     = "/tmp/heartbeat.ts"
+HEARTBEAT_INTERVAL = 30
+
+async def heartbeat_writer():
+    while not _exit:
+        with open(HEARTBEAT_PATH, "w") as f:
+            f.write(str(time.time()))
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+
+
+# ==========================================
 # 推理 worker（消费队列，一次处理一块）
 # ==========================================
 async def inference_worker(mel_cfg, q_interp, d_interp,
                             q_in, q_out, d_in, d_out):
-    tally = {"Normal": 0, "Abnormal": 0, "noise": 0}
-
-    # 初始化 CSV（文件不存在时写表头）
-    write_header = not os.path.exists(LOG_PATH)
-    log_file = open(LOG_PATH, "a", newline="")
-    writer = csv.writer(log_file)
-    if write_header:
-        writer.writerow(["time", "chunk_idx", "win_idx",
-                         "sqa_score", "sqa_pass", "prob_normal",
-                         "chunk_label", "chunk_prob_normal"])
+    tally = {"Normal": 0, "Abnormal": 0, "noise": 0, "_last_label": None}
+    log_file = None
+    writer = None
 
     while True:
         # 有块就处理，没块就等 1s；_running=False 且队列空时退出
@@ -189,14 +207,31 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
                 break
             continue
 
-        print(f"\n[块 {chunk_idx:03d}] 推理中（{CHUNK_DURATION}s / {CHUNK_SAMPLES//HOP_SAMPLES - 1} 窗口）...")
+        # 第一次收到块时再初始化 CSV（避免启动时阻塞 event loop）
+        if log_file is None:
+            os.makedirs(RECORDS_DIR, exist_ok=True)
+            write_header = not os.path.exists(LOG_PATH)
+            log_file = open(LOG_PATH, "a", newline="")
+            writer = csv.writer(log_file)
+            if write_header:
+                writer.writerow(["time", "chunk_idx", "win_idx",
+                                 "sqa_score", "sqa_pass", "prob_normal",
+                                 "chunk_label", "chunk_prob_normal"])
 
+        print(f"\n[块 {chunk_idx:03d}] 推理中（{CHUNK_DURATION}s / {CHUNK_SAMPLES//HOP_SAMPLES - 1} 窗口）...")
+        oled.show_running(chunk_idx=chunk_idx, last_label=tally.get("_last_label"))
+
+        last_label_upper = tally.get("_last_label")
         label, avg_prob, valid_count, total_windows, window_data = await asyncio.to_thread(
             run_inference, raw_bytes, mel_cfg,
-            q_interp, d_interp, q_in, q_out, d_in, d_out
+            q_interp, d_interp, q_in, q_out, d_in, d_out,
+            oled.show_running, chunk_idx, last_label_upper
         )
 
         chunk_time = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        if label is not None:
+            tally["_last_label"] = label.upper()
 
         if label is None:
             tally["noise"] += 1
@@ -226,12 +261,13 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
                 f"{avg_prob:.4f}" if avg_prob is not None else ""
             ])
         log_file.flush()
+        append_summary(label, avg_prob, valid_count, total_windows)
 
         _chunk_queue.task_done()
 
     log_file.close()
 
-    total = sum(tally.values())
+    total = tally["Normal"] + tally["Abnormal"] + tally["noise"]
     print("\n" + "=" * 50)
     if total == 0:
         print("未采集到任何数据。")
@@ -244,10 +280,60 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
 
 
 # ==========================================
+# 单次采集会话（按键启动/停止）
+# ==========================================
+async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
+    global _chunk_queue, _running, _recv_buf, _chunk_count
+
+    _running = True
+    _chunk_queue = asyncio.Queue(maxsize=1)
+    _recv_buf.clear()
+    _chunk_count = 0
+
+    print(f"正在连接 ESP32: {ESP32_MAC}...")
+    oled.show_connecting(0.0)
+
+    client = BleakClient(ESP32_MAC)
+    try:
+        await asyncio.wait_for(client.connect(), timeout=15.0)
+    except Exception as e:
+        print(f"连接失败: {e}")
+        oled.show_error("Connect Failed")
+        await asyncio.sleep(3)
+        return
+
+    try:
+        await client._backend._acquire_mtu()
+        print(f"已连接，MTU: {client.mtu_size} 字节")
+        oled.show_running(chunk_idx=0)
+        await client.start_notify(CHARACTERISTIC_UUID, notification_handler)
+        await asyncio.sleep(2)   # 等 ESP32 把积压缓冲排空
+        _recv_buf.clear()
+        _chunk_count = 0
+        print(f"流式采集启动（每 {CHUNK_DURATION}s 一块，滑窗 {SEG_DURATION}s / hop {HOP_SAMPLES/SAMPLE_RATE}s）")
+        print("短按按键停止\n")
+
+        worker = asyncio.create_task(
+            inference_worker(mel_cfg, q_interp, d_interp,
+                             q_in, q_out, d_in, d_out)
+        )
+
+        while _running:
+            await asyncio.sleep(0.1)
+
+        await client.stop_notify(CHARACTERISTIC_UUID)
+        await worker
+    finally:
+        await client.disconnect()
+
+
+# ==========================================
 # 主程序
 # ==========================================
 async def main():
-    global _chunk_queue, _running
+    global _running, _exit
+
+    oled.show_standby()
 
     with open(os.path.join(PROJECT_ROOT, "config.yaml"), "r") as f:
         config = yaml.safe_load(f)
@@ -265,34 +351,55 @@ async def main():
     d_in  = d_interp.get_input_details()[0]['index']
     d_out = d_interp.get_output_details()[0]['index']
 
-    _chunk_queue = asyncio.Queue(maxsize=1)
+    session_event = asyncio.Event()
+
+    async def on_short_press():
+        global _running
+        if not _running:
+            session_event.set()
+        else:
+            _running = False
+
+    async def on_long_press():
+        global _running, _exit
+        _running = False
+        _exit = True
+        oled.show_text("关机中...")
+        await asyncio.sleep(1)
+        os.system("sudo shutdown -h now")
+
+    btn = Button()
+    btn.on_short_press(on_short_press)
+    btn.on_long_press(on_long_press)
+    btn.start()
 
     loop = asyncio.get_event_loop()
-    def handle_sigint():
-        global _running
+    def handle_signal():
+        global _running, _exit
         _running = False
-        print("\nCtrl+C — 等待当前块推理完成后退出...")
-    loop.add_signal_handler(signal.SIGINT, handle_sigint)
+        _exit = True
+        session_event.set()
+        print("\n退出信号 — 等待当前块推理完成后退出...")
+    loop.add_signal_handler(signal.SIGINT, handle_signal)
+    loop.add_signal_handler(signal.SIGTERM, handle_signal)
 
-    print(f"正在连接 ESP32: {ESP32_MAC}...")
+    hb = asyncio.create_task(heartbeat_writer())
 
-    async with BleakClient(ESP32_MAC) as client:
-        await client._backend._acquire_mtu()
-        print(f"已连接，MTU: {client.mtu_size} 字节")
-        await client.start_notify(CHARACTERISTIC_UUID, notification_handler)
-        print(f"流式采集启动（每 {CHUNK_DURATION}s 一块，滑窗 {SEG_DURATION}s / hop {HOP_SAMPLES/SAMPLE_RATE}s）")
-        print("Ctrl+C 停止\n")
+    oled.show_standby()
+    print("待机中，短按按键开始采集，长按 3s 关机")
 
-        worker = asyncio.create_task(
-            inference_worker(mel_cfg, q_interp, d_interp,
-                             q_in, q_out, d_in, d_out)
-        )
+    while not _exit:
+        await session_event.wait()
+        session_event.clear()
+        if _exit:
+            break
+        await run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out)
+        if not _exit:
+            oled.show_standby()
+            print("采集结束，短按按键重新开始")
 
-        while _running:
-            await asyncio.sleep(0.1)
-
-        await client.stop_notify(CHARACTERISTIC_UUID)
-        await worker   # 等最后一块处理完
+    hb.cancel()
+    btn.stop()
 
 
 if __name__ == "__main__":
