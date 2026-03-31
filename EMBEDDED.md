@@ -1,6 +1,6 @@
 # 嵌入式系统模块规划
 
-本文档梳理整个心音诊断系统的完整模块构成，覆盖 ESP32（采集端）与 Raspberry Pi Zero 2W（推理端）两侧，以及系统集成所需的各类基础设施。
+本文档梳理整个心音诊断系统的完整模块构成，覆盖 ESP32（采集端）与 Raspberry Pi 4B（推理端）两侧，以及系统集成所需的各类基础设施。
 
 ---
 
@@ -13,7 +13,7 @@
 └───────────────────┬──────────────────────────────────────────────┘
                     │
 ┌───────────────────▼──────────────────────────────────────────────┐
-│                Raspberry Pi Zero 2W（推理端）                     │
+│                Raspberry Pi 4B（推理端）                          │
 │                                                                   │
 │  [BLE接收] → [预处理] → [TFLite推理] → [结果管理] → [上报]      │
 │                                                                   │
@@ -106,8 +106,7 @@
 ### 3.4 OLED 显示屏（可选扩展）
 - SSD1306 128×32，I2C 接口
 - 显示内容：当前状态、最近结果、电量
-- 库：`luma.oled`（若内存允许），或直接操作 I2C 帧缓冲
-- **Zero 2W 内存紧张时可去掉此模块**
+- 库：`luma.oled`
 
 ---
 
@@ -127,11 +126,10 @@
   {"ts": "2026-03-29T10:30:00", "label": "Normal", "prob_normal": 0.82, "valid_segs": 3, "total_segs": 3}
   ```
 - 便于后续统计和上报，不依赖 CSV 解析
+- **已实现**：`src/storage/summary.py` 提供 `append_summary(label, prob_normal, valid_segs, total_segs)`，在 `main_pi.py` 的 `inference_worker` 中每块推理完成后调用；`records/` 目录自动创建；信号差时 `label="noise"`，`prob_normal=null`
 
 ### 4.4 数据清理策略
-- 本地最多保留 30 天数据，超期自动删除
-- WAV 文件大小上限：50MB（Zero 2W SD 卡容量有限）
-- 实现文件：`src/storage/cleaner.py`，由 systemd timer 每日触发
+- 暂不实现（Pi 4B SD 卡 64GB，容量充裕，不是当前优先项）
 
 ---
 
@@ -219,9 +217,8 @@ sudo systemctl restart heartbeat
 ## 模块八：电源管理（Pi 端）
 
 ### 8.1 供电方案
-- **有线**：5V/2.5A USB-C（开发调试）
+- **有线**：5V/3A USB-C（Pi 4B 标准供电）
 - **便携**：5V 移动电源（UPS HAT 可实现不间断供电）
-- Zero 2W 峰值功耗约 1.3W，正常工作约 0.7W
 
 ### 8.2 软件节能
 - 推理空闲时（等待 BLE 数据）：asyncio 事件循环自然休眠，CPU 占用低
@@ -251,9 +248,9 @@ sudo systemctl restart heartbeat
 | LED 状态指示 | 未实现 | `src/ui/led.py` |
 | 蜂鸣器 | 未实现 | `src/ui/buzzer.py` |
 | OLED 显示 | 未实现（可选） | 内存允许再加 |
-| 结果摘要 JSONL | 未实现 | `src/storage/` |
-| 数据清理 | 未实现 | `src/storage/cleaner.py` |
+| 结果摘要 JSONL | 已实现 | `src/storage/summary.py` |
+| 数据清理 | 暂不做 | 64GB 容量充裕 |
 | 网络上报 | 未实现（可选） | `src/network/reporter.py` |
-| systemd 服务 | 未实现 | `deploy/heartbeat.service` |
-| 软件看门狗 | 未实现 | `src/watchdog.py` |
-| 安全关机 | 部分（SIGINT） | 需扩展按键长按 |
+| systemd 服务 | 已实现 | `deploy/heartbeat.service`，`deploy/install.sh` |
+| 软件看门狗 | 已实现 | `src/watchdog.py` + `deploy/watchdog.service` |
+| 安全关机 | 已实现（SIGINT + SIGTERM） | 按键长按关机依赖按键模块 |
