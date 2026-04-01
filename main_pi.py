@@ -20,10 +20,12 @@ if PROJECT_ROOT not in sys.path:
 from src.preprocess.filters import apply_bandpass
 from src.preprocess.mel import logmel_fixed_size
 from src.storage.summary import append_summary
-from src.display.oled import OLEDDisplay
+import psutil
+from src.display.oled import OLEDDisplay, SysInfoDisplay
 from src.ui.button import Button
 
-oled = OLEDDisplay()
+oled  = OLEDDisplay()
+oled2 = SysInfoDisplay()
 
 # ==========================================
 # 配置
@@ -185,6 +187,19 @@ async def heartbeat_writer():
         with open(HEARTBEAT_PATH, "w") as f:
             f.write(str(time.time()))
         await asyncio.sleep(HEARTBEAT_INTERVAL)
+
+
+async def sysinfo_updater():
+    while not _exit:
+        cpu  = psutil.cpu_percent(interval=None)
+        mem  = psutil.virtual_memory()
+        try:
+            temps = psutil.sensors_temperatures()
+            temp  = temps["cpu_thermal"][0].current
+        except Exception:
+            temp  = 0.0
+        oled2.show(cpu, mem.used / 1024**2, mem.total / 1024**2, temp)
+        await asyncio.sleep(2)
 
 
 # ==========================================
@@ -383,7 +398,8 @@ async def main():
     loop.add_signal_handler(signal.SIGINT, handle_signal)
     loop.add_signal_handler(signal.SIGTERM, handle_signal)
 
-    hb = asyncio.create_task(heartbeat_writer())
+    hb   = asyncio.create_task(heartbeat_writer())
+    si   = asyncio.create_task(sysinfo_updater())
 
     oled.show_standby()
     print("待机中，短按按键开始采集，长按 3s 关机")
@@ -399,6 +415,7 @@ async def main():
             print("采集结束，短按按键重新开始")
 
     hb.cancel()
+    si.cancel()
     btn.stop()
 
 

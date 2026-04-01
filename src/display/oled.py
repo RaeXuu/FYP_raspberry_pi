@@ -1,7 +1,7 @@
 import threading
 import time
 from luma.core.interface.serial import i2c
-from luma.oled.device import ssd1306
+from luma.oled.device import ssd1306, sh1106
 from luma.core.render import canvas
 
 
@@ -85,6 +85,26 @@ class OLEDDisplay:
         def fn(draw):
             draw.text((0, 16), msg, fill="white")
         self._draw(fn)
+
+    def cleanup(self):
+        self.device.cleanup()
+
+
+class SysInfoDisplay:
+    """第二块屏（128x32 ssd1306，i2c-4），显示系统状态。"""
+    def __init__(self, port=4, address=0x3C):
+        serial = i2c(port=port, address=address)
+        self.device = ssd1306(serial, width=128, height=32, rotate=0)
+        self._lock = threading.Lock()
+
+    def show(self, cpu_pct, mem_used_mb, mem_total_mb, temp_c):
+        def fn(draw):
+            draw.text((0, 0),  f"CPU: {cpu_pct:5.1f}%",              fill="white")
+            draw.text((0, 9),  f"Mem: {mem_used_mb:.0f}/{mem_total_mb:.0f}MB", fill="white")
+            draw.text((0, 18), f"Tmp: {temp_c:.0f}C",                fill="white")
+        with self._lock:
+            with canvas(self.device) as draw:
+                fn(draw)
 
     def cleanup(self):
         self.device.cleanup()
