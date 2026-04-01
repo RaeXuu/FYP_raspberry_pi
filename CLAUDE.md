@@ -64,6 +64,16 @@ ESP32 BLE → notification_handler() → bytearray buffer
 - `heart_model_quant.tflite`：心音诊断（index 0=Normal, 1=Abnormal）
 - `*_fp32.tflite`：FP32 版本备用，部署时使用 quant 版以节省内存
 
+## OLED 配置
+
+| 屏幕 | 类 | I2C bus | 驱动 | 尺寸 | 内容 |
+|---|---|---|---|---|---|
+| OLED 1（主屏） | `OLEDDisplay` | port=1（GPIO2/3） | ssd1306 128×64 | 诊断状态、连接进度、推理结果 |
+| OLED 2（副屏） | `SysInfoDisplay` | port=4（GPIO23/24） | ssd1306 128×32 rotate=0 | CPU%、内存、温度（每2s刷新） |
+
+- OLED 2 用软件 I2C：`dtoverlay=i2c-gpio,bus=4,i2c_gpio_sda=23,i2c_gpio_scl=24`
+- **OLED 2 必须用 `ssd1306(width=128, height=32, rotate=0)`**，`sh1106` 或 `height=64` 均显示异常
+
 ## BLE 配置
 - ESP32 MAC：`80:F1:B2:ED:B4:12`（设备名：ESP32_Steth）
 - 特征 UUID：`beb5483e-36e1-4688-b7f5-ea07361b26a8`

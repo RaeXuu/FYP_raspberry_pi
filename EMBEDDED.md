@@ -37,10 +37,14 @@
 |---|---|---|---|
 | 风扇 VCC（已接） | — | Pin 2 (5V) | 占用，勿动 |
 | 风扇 GND（已接） | — | Pin 9 (GND) | 占用，勿动 |
-| OLED SCL | GPIO3 | Pin 5 | I2C1 SCL |
-| OLED SDA | GPIO2 | Pin 3 | I2C1 SDA |
-| OLED VCC | — | Pin 1 (3.3V) | — |
-| OLED GND | — | Pin 6 (GND) | — |
+| OLED 1 SCL | GPIO3 | Pin 5 | I2C1 SCL |
+| OLED 1 SDA | GPIO2 | Pin 3 | I2C1 SDA |
+| OLED 1 VCC | — | Pin 1 (3.3V) | — |
+| OLED 1 GND | — | Pin 6 (GND) | — |
+| OLED 2 SCL | GPIO24 | Pin 18 | 软件 I2C（i2c-4）SCL |
+| OLED 2 SDA | GPIO23 | Pin 16 | 软件 I2C（i2c-4）SDA |
+| OLED 2 VCC | — | Pin 17 (3.3V) | — |
+| OLED 2 GND | — | Pin 20 (GND) | — |
 | LED | GPIO17 | Pin 11 | 串联 330Ω 限流电阻 |
 | LED GND | — | Pin 14 (GND) | — |
 | 按键 | GPIO27 | Pin 13 | 内部上拉，另一端接 GND |
@@ -141,9 +145,12 @@
 ### 3.2 OLED 显示屏（已实现）
 
 - **实现文件**：`src/display/oled.py`
-- **硬件**：SSD1306 128×32，I2C 接口（port=1，address=0x3C）
 - **库**：`luma.oled`（`luma.core` + `luma.oled`）
 - 内部使用 `threading.Lock` 保证线程安全
+
+#### OLED 1（诊断主屏）
+- **类**：`OLEDDisplay`（port=1，address=0x3C）
+- **硬件**：SSD1306 128×64，I2C1（GPIO2 SDA / GPIO3 SCL，Pin 3/5）
 
 | 方法 | 显示内容 | 触发时机 |
 |---|---|---|
@@ -153,6 +160,18 @@
 | `show_running(normal_pct, abnormal_pct, chunk_idx, last_label)` | 当前块编号 + Normal/Abnormal 实时概率 + 上次结果 | 每块推理中（窗口级更新） |
 | `show_error(msg)` | 错误信息 + "Retry: press btn" | BLE 连接失败 |
 | `show_text(msg)` | 任意单行文字 | 关机提示等 |
+
+#### OLED 2（系统状态副屏）
+- **类**：`SysInfoDisplay`（port=4，address=0x3C）
+- **硬件**：SSD1306 128×32（蓝色像素），软件 I2C（GPIO23 SDA / GPIO24 SCL，Pin 16/18）
+- **供电**：Pin 17（3.3V）/ Pin 20（GND）
+- **dtoverlay**：`dtoverlay=i2c-gpio,bus=4,i2c_gpio_sda=23,i2c_gpio_scl=24`（已写入 `/boot/firmware/config.txt`）
+- **初始化**：`ssd1306(width=128, height=32, rotate=0)`（用 `sh1106` 或 `height=64` 显示异常）
+- **刷新频率**：每 2 秒，`sysinfo_updater()` 后台 asyncio task 全程运行
+
+| 方法 | 显示内容 |
+|---|---|
+| `show(cpu_pct, mem_used_mb, mem_total_mb, temp_c)` | CPU%（行1）/ 内存 used/total MB（行2）/ CPU温度（行3） |
 
 ### 3.3 LED 状态指示（未实现）
 - 规划使用单颗 RGB LED（共阴），GPIO PWM 驱动
@@ -296,7 +315,8 @@ sudo systemctl restart heartbeat
 | 物理按键 | 已实现 | `src/ui/button.py` |
 | LED 状态指示 | 未实现 | `src/ui/led.py` |
 | 蜂鸣器 | 未实现 | `src/ui/buzzer.py` |
-| OLED 显示 | 已实现 | `src/display/oled.py` |
+| OLED 1 显示（诊断主屏） | 已实现 | `src/display/oled.py` → `OLEDDisplay` |
+| OLED 2 显示（系统状态副屏） | 已实现 | `src/display/oled.py` → `SysInfoDisplay` |
 | 结果摘要 JSONL | 已实现 | `src/storage/summary.py` |
 | 数据清理 | 未实现 | `src/storage/cleaner.py` |
 | 网络上报 | 未实现（可选） | `src/network/reporter.py` |
