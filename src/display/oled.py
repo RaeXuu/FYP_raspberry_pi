@@ -10,35 +10,52 @@ class OLEDDisplay:
         serial = i2c(port=port, address=address)
         self.device = ssd1306(serial)
         self._lock = threading.Lock()
+        self._blink_stop   = threading.Event()
+        self._blink_thread = None
+        self._conn_stop    = threading.Event()
+        self._conn_thread  = None
 
     def _draw(self, fn):
         with self._lock:
             with canvas(self.device) as draw:
                 fn(draw)
 
-    # --------------------------------------------------
-    # 1. 启动页
-    # --------------------------------------------------
-    def show_boot(self):
-        def fn(draw):
-            draw.text((16, 0),  "Heart Sound",  fill="white")
-            draw.text((24, 10), "Diagnosis",    fill="white")
-            draw.text((44, 22), "v1.0",         fill="white")
-        self._draw(fn)
 
     # --------------------------------------------------
-    # 2. 连接中（progress: 0.0–1.0）
+    # 2. 连接中
     # --------------------------------------------------
-    def show_connecting(self, progress=0.0):
+    def show_connecting(self, progress=0.0, timeout_left=15):
         bar_w = 120
         filled = int(bar_w * progress)
 
         def fn(draw):
-            draw.text((0, 0),  "Connecting...", fill="white")
-            draw.rectangle([0, 14, bar_w, 22], outline="white")
+            draw.text((0,  4), "Connecting ESP32...",         fill="white")
+            draw.rectangle([0, 18, bar_w, 26], outline="white")
             if filled > 0:
-                draw.rectangle([0, 14, filled, 22], fill="white")
+                draw.rectangle([0, 18, filled, 26], fill="white")
+            draw.text((0, 36), f"Timeout: {timeout_left:2d}s", fill="white")
         self._draw(fn)
+
+    def start_connecting_countdown(self, timeout=15):
+        self._conn_stop.clear()
+        self._conn_thread = threading.Thread(
+            target=self._conn_loop, args=(timeout,), daemon=True)
+        self._conn_thread.start()
+
+    def stop_connecting_countdown(self):
+        self._conn_stop.set()
+        if self._conn_thread:
+            self._conn_thread.join(timeout=2)
+            self._conn_thread = None
+
+    def _conn_loop(self, timeout):
+        start = time.time()
+        while not self._conn_stop.is_set():
+            elapsed  = time.time() - start
+            progress = min(1.0, elapsed / timeout)
+            remaining = max(0, timeout - int(elapsed))
+            self.show_connecting(progress, remaining)
+            self._conn_stop.wait(timeout=1.0)
 
     # --------------------------------------------------
     # 3. 运行中（含上次结果）
@@ -46,23 +63,29 @@ class OLEDDisplay:
     #    chunk_idx: 当前块编号
     #    last_label: "NORMAL" / "ABNORMAL" / None
     # --------------------------------------------------
-    def show_running(self, normal_pct=None, abnormal_pct=None,
-                     chunk_idx=0, last_label=None):
-        if normal_pct is None:
-            n_str = "Normal:    --"
-            a_str = "Abnormal:  --"
-        else:
-            n_str = f"Normal:  {normal_pct:5.1f}%"
-            a_str = f"Abnormal:{abnormal_pct:5.1f}%"
+    def show_running(self, normal_pct=None, chunk_idx=0,
+                     last_label=None, last_chunk_idx=None, last_prob=None,
+                     win_idx=0, total_win=0, heart_on=True):
+        n_str    = f"Normal: {normal_pct:5.1f}%" if normal_pct is not None else "Normal:    --"
+        win_str  = f"Win: {win_idx:02d}/{total_win:02d}" if total_win > 0 else "Win: --/--"
 
-        last_str = f"Last: {last_label}" if last_label else "Last: --"
+        if last_label and last_chunk_idx is not None:
+            last_hdr  = f"Last: #{last_chunk_idx:03d}"
+            last_body = f"{last_label}  {last_prob*100:4.1f}%" if last_prob is not None else last_label
+        else:
+            last_hdr  = "Last: --"
+            last_body = ""
 
         def fn(draw):
-            draw.text((0, 0),  f"Analyzing #{chunk_idx:03d}", fill="white")
-            draw.text((0, 10), n_str,                          fill="white")
-            draw.text((0, 20), a_str,                          fill="white")
-            draw.text((0, 30) if last_label else (0, 30),
-                      last_str, fill="white")
+            if heart_on:
+                OLEDDisplay._draw_heart(draw, 0, 3)
+            draw.text((9,  0), f"> Analyzing #{chunk_idx:03d}", fill="white")
+            draw.text((9, 10), win_str,                          fill="white")
+            draw.text((9, 20), n_str,                            fill="white")
+            draw.line([(0, 35), (127, 35)],                      fill="white")
+            OLEDDisplay._draw_heart(draw, 0, 42)
+            draw.text((9, 38), last_hdr,                         fill="white")
+            draw.text((9, 48), last_body,                        fill="white")
         self._draw(fn)
 
     # --------------------------------------------------
@@ -74,12 +97,51 @@ class OLEDDisplay:
             draw.text((0, 20), "Retry: press btn", fill="white")
         self._draw(fn)
 
-    def show_standby(self):
+    @staticmethod
+    def _draw_heart(draw, x, y):
+        """在 (x, y) 处绘制 7×6 像素爱心。"""
+        pixels = [
+            (x+1,y+0),(x+2,y+0),(x+4,y+0),(x+5,y+0),
+            (x+0,y+1),(x+1,y+1),(x+2,y+1),(x+3,y+1),(x+4,y+1),(x+5,y+1),(x+6,y+1),
+            (x+0,y+2),(x+1,y+2),(x+2,y+2),(x+3,y+2),(x+4,y+2),(x+5,y+2),(x+6,y+2),
+            (x+1,y+3),(x+2,y+3),(x+3,y+3),(x+4,y+3),(x+5,y+3),
+            (x+2,y+4),(x+3,y+4),(x+4,y+4),
+            (x+3,y+5),
+        ]
+        draw.point(pixels, fill="white")
+
+    def show_standby(self, heart_on=True):
         def fn(draw):
-            draw.text((10, 2),  "Heart Sound", fill="white")
-            draw.text((4, 14),  "Diagnosis  v1.0", fill="white")
-            draw.text((4, 26),  "Press to start", fill="white")
+            draw.rectangle([0, 0, 127, 50], outline="white")
+            draw.text(( 4,  1), "Heartsound Diagnosis", fill="white")
+            draw.line([(1, 13), (126, 13)],             fill="white")
+            draw.text(( 4, 15), "NUSRI  Xu Ruijing",   fill="white")
+            draw.text(( 4, 26), "NUSRI  Wang Yulin",   fill="white")
+            draw.text(( 4, 37), "Advisor: Prof. Heng", fill="white")
+            if heart_on:
+                OLEDDisplay._draw_heart(draw, 29, 56)
+            draw.text((40, 53), "Press to start ...",   fill="white")
         self._draw(fn)
+
+    def start_standby_blink(self):
+        """启动爱心闪烁线程（每秒切换一次）。"""
+        self._blink_stop.clear()
+        self._blink_thread = threading.Thread(target=self._blink_loop, daemon=True)
+        self._blink_thread.start()
+
+    def stop_standby_blink(self):
+        """停止爱心闪烁线程。"""
+        self._blink_stop.set()
+        if self._blink_thread:
+            self._blink_thread.join(timeout=2)
+            self._blink_thread = None
+
+    def _blink_loop(self):
+        heart_on = True
+        while not self._blink_stop.is_set():
+            self.show_standby(heart_on=heart_on)
+            heart_on = not heart_on
+            self._blink_stop.wait(timeout=1.0)
 
     def show_text(self, msg):
         def fn(draw):
@@ -116,27 +178,32 @@ if __name__ == "__main__":
 
     oled = OLEDDisplay()
 
-    print("1. 启动页")
-    oled.show_boot()
-    time.sleep(3)
+    print("1. 待机页（爱心闪烁 5s）")
+    oled.start_standby_blink()
+    time.sleep(5)
+    oled.stop_standby_blink()
 
-    print("2. 待机页")
-    oled.show_standby()
-    time.sleep(3)
-
-    print("3. 连接中（进度动画）")
-    for i in range(11):
-        oled.show_connecting(i / 10)
-        time.sleep(0.3)
+    print("2. 连接中（倒计时 5s 演示）")
+    oled.start_connecting_countdown(timeout=5)
+    time.sleep(5)
+    oled.stop_connecting_countdown()
 
     print("4. 运行中（模拟窗口更新）")
-    last = None
+    last_label = None
+    last_cidx  = None
+    last_prob  = None
     for chunk in range(1, 4):
         for win in range(1, 10):
             n = random.uniform(40, 90)
-            oled.show_running(n, 100 - n, chunk, last)
+            oled.show_running(
+                normal_pct=n, chunk_idx=chunk,
+                last_label=last_label, last_chunk_idx=last_cidx, last_prob=last_prob,
+                win_idx=win, total_win=9, heart_on=(win % 2 == 0)
+            )
             time.sleep(0.3)
-        last = "NORMAL" if n > 50 else "ABNORMAL"
+        last_label = "NORMAL" if n > 50 else "ABNORMAL"
+        last_cidx  = chunk
+        last_prob  = n / 100
 
     print("5. 错误页")
     oled.show_error("BLE Lost!")

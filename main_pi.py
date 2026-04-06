@@ -32,6 +32,7 @@ oled2 = SysInfoDisplay()
 # ==========================================
 ESP32_MAC           = "80:F1:B2:ED:B4:12"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+BLE_CONNECT_TIMEOUT = 15
 
 SAMPLE_RATE    = 2000
 SEG_DURATION   = 2.0    # 滑动窗口长度（秒），与训练对齐
@@ -104,7 +105,8 @@ def notification_handler(sender, data):
 # 推理函数（在 to_thread 中运行，不阻塞事件循环）
 # ==========================================
 def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
-                  q_in, q_out, d_in, d_out, on_window=None, chunk_idx=0, last_label=None):
+                  q_in, q_out, d_in, d_out, on_window=None, chunk_idx=0,
+                  last_label=None, last_chunk_idx=None, last_prob=None):
     """
     对一块原始 int16 字节做滑动窗口推理。
     返回: (label, avg_prob, valid_count, total_windows, window_data)
@@ -163,7 +165,10 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
             weights = [r[0] for r in valid_results]
             probs   = [r[1] for r in valid_results]
             avg     = sum(w * p for w, p in zip(weights, probs)) / sum(weights)
-            on_window(avg * 100, (1 - avg) * 100, chunk_idx, last_label)
+            on_window(avg * 100, chunk_idx, last_label,
+                      last_chunk_idx, last_prob,
+                      win_idx + 1, total_windows,
+                      win_idx % 2 == 0)
 
     if not valid_results:
         return None, None, 0, total_windows, window_data
@@ -207,7 +212,8 @@ async def sysinfo_updater():
 # ==========================================
 async def inference_worker(mel_cfg, q_interp, d_interp,
                             q_in, q_out, d_in, d_out):
-    tally = {"Normal": 0, "Abnormal": 0, "noise": 0, "_last_label": None}
+    tally = {"Normal": 0, "Abnormal": 0, "noise": 0,
+             "_last_label": None, "_last_chunk_idx": None, "_last_prob": None}
     log_file = None
     writer = None
 
@@ -234,19 +240,24 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
                                  "chunk_label", "chunk_prob_normal"])
 
         print(f"\n[块 {chunk_idx:03d}] 推理中（{CHUNK_DURATION}s / {CHUNK_SAMPLES//HOP_SAMPLES - 1} 窗口）...")
-        oled.show_running(chunk_idx=chunk_idx, last_label=tally.get("_last_label"))
+        oled.show_running(chunk_idx=chunk_idx,
+                          last_label=tally.get("_last_label"),
+                          last_chunk_idx=tally.get("_last_chunk_idx"),
+                          last_prob=tally.get("_last_prob"))
 
-        last_label_upper = tally.get("_last_label")
         label, avg_prob, valid_count, total_windows, window_data = await asyncio.to_thread(
             run_inference, raw_bytes, mel_cfg,
             q_interp, d_interp, q_in, q_out, d_in, d_out,
-            oled.show_running, chunk_idx, last_label_upper
+            oled.show_running, chunk_idx,
+            tally.get("_last_label"), tally.get("_last_chunk_idx"), tally.get("_last_prob")
         )
 
         chunk_time = time.strftime("%Y-%m-%d %H:%M:%S")
 
         if label is not None:
-            tally["_last_label"] = label.upper()
+            tally["_last_label"]     = label.upper()
+            tally["_last_chunk_idx"] = chunk_idx
+            tally["_last_prob"]      = avg_prob
 
         if label is None:
             tally["noise"] += 1
@@ -306,16 +317,18 @@ async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
     _chunk_count = 0
 
     print(f"正在连接 ESP32: {ESP32_MAC}...")
-    oled.show_connecting(0.0)
+    oled.start_connecting_countdown(timeout=BLE_CONNECT_TIMEOUT)
 
     client = BleakClient(ESP32_MAC)
     try:
-        await asyncio.wait_for(client.connect(), timeout=15.0)
+        await asyncio.wait_for(client.connect(), timeout=BLE_CONNECT_TIMEOUT)
     except Exception as e:
+        oled.stop_connecting_countdown()
         print(f"连接失败: {e}")
         oled.show_error("Connect Failed")
         await asyncio.sleep(3)
         return
+    oled.stop_connecting_countdown()
 
     try:
         await client._backend._acquire_mtu()
@@ -348,7 +361,7 @@ async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
 async def main():
     global _running, _exit
 
-    oled.show_standby()
+    oled.start_standby_blink()
 
     with open(os.path.join(PROJECT_ROOT, "config.yaml"), "r") as f:
         config = yaml.safe_load(f)
@@ -401,7 +414,7 @@ async def main():
     hb   = asyncio.create_task(heartbeat_writer())
     si   = asyncio.create_task(sysinfo_updater())
 
-    oled.show_standby()
+    oled.start_standby_blink()
     print("待机中，短按按键开始采集，长按 3s 关机")
 
     while not _exit:
@@ -409,9 +422,10 @@ async def main():
         session_event.clear()
         if _exit:
             break
+        oled.stop_standby_blink()
         await run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out)
         if not _exit:
-            oled.show_standby()
+            oled.start_standby_blink()
             print("采集结束，短按按键重新开始")
 
     hb.cancel()
