@@ -147,6 +147,7 @@
 - **实现文件**：`src/display/oled.py`
 - **库**：`luma.oled`（`luma.core` + `luma.oled`）
 - 内部使用 `threading.Lock` 保证线程安全
+- 动画效果（爱心闪烁、连接倒计时）通过后台 daemon 线程实现，`threading.Event` 控制停止
 
 #### OLED 1（诊断主屏）
 - **类**：`OLEDDisplay`（port=1，address=0x3C）
@@ -154,12 +155,42 @@
 
 | 方法 | 显示内容 | 触发时机 |
 |---|---|---|
-| `show_boot()` | "Heart Sound / Diagnosis / v1.0" | 程序启动 |
-| `show_standby()` | "Heart Sound / Press to start" | 待机等待按键 |
-| `show_connecting(progress)` | "Connecting..." + 进度条（0.0–1.0） | BLE 连接中 |
-| `show_running(normal_pct, abnormal_pct, chunk_idx, last_label)` | 当前块编号 + Normal/Abnormal 实时概率 + 上次结果 | 每块推理中（窗口级更新） |
+| `start_standby_blink()` | 项目信息框 + 团队成员 + 导师 + "Press to start..." + 爱心每秒闪烁 | 程序启动 / 每次采集结束后 |
+| `stop_standby_blink()` | 停止闪烁线程 | 短按按键，采集开始前 |
+| `start_connecting_countdown(timeout)` | "Connecting ESP32..." + 进度条（随时间填满）+ 倒计时秒数 | BLE 连接中 |
+| `stop_connecting_countdown()` | 停止倒计时线程 | 连接成功或失败后 |
+| `show_running(normal_pct, chunk_idx, last_label, last_chunk_idx, last_prob, win_idx, total_win, heart_on)` | 上半区：闪烁爱心 + 当前 chunk 编号 + 窗口进度 + Normal 概率；分隔线；下半区：静态爱心 + 上一 chunk 编号与结果 + 置信度 | 每个有效推理窗口回调 |
 | `show_error(msg)` | 错误信息 + "Retry: press btn" | BLE 连接失败 |
 | `show_text(msg)` | 任意单行文字 | 关机提示等 |
+
+**待机页布局（128×64）：**
+```
+┌──────────────────────────────┐  y=0
+│ Heartsound Diagnosis         │  y=1
+├──────────────────────────────┤  y=13
+│ NUSRI  Xu Ruijing            │  y=15
+│ NUSRI  Wang Yulin            │  y=26
+│ Advisor: Prof. Heng          │  y=37
+└──────────────────────────────┘  y=50
+  ♥ Press to start...            y=53（爱心每秒闪烁）
+```
+
+**连接页布局（128×64）：**
+```
+Connecting ESP32...             y=4
+[========================  ]    y=18（进度条，随时间填满）
+Timeout: 12s                    y=36（每秒倒数）
+```
+
+**运行页布局（128×64）：**
+```
+♥ > Analyzing #003              y=0（爱心每窗口闪烁）
+  Win: 05/09                    y=10
+  Normal: 73.2%                 y=20
+──────────────────────────────  y=35
+♥ Last: #002                    y=38（爱心常亮）
+  NORMAL  81.3%                 y=48
+```
 
 #### OLED 2（系统状态副屏）
 - **类**：`SysInfoDisplay`（port=4，address=0x3C）
