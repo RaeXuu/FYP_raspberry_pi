@@ -1,17 +1,17 @@
 
 data:
-  sample_rate: 2000  # 4000
-  segment_length: 2.0  # 2.5 3.0
-  overlap: 0.5  # 0.0
+  sample_rate: 2000
+  segment_length: 2.0
+  overlap: 0.5
   bandpass:
     low: 25
     high: 400
 
 mel:
-  n_fft: 256  # 512
-  win_length: 256  # 512
-  hop_length: 96 # 128 # 64 # 80 # 96 
-  n_mels: 32  # 40
+  n_fft: 256
+  win_length: 256 
+  hop_length: 128
+  n_mels: 64
   fmin: 20
   fmax: 400
   power: 2.0

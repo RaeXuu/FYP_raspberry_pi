@@ -1,12 +1,12 @@
 """
-推理性能基准测试
-用随机噪声模拟一个完整 chunk，测量各阶段耗时和资源占用。
-模型训练完替换 .tflite 文件后直接重跑即可。
+推理性能基准测试（FP32 vs INT8）
+对单个 2s 窗口重复推理 N 次，取中位数延迟。
+资源占用在全流程结束后统计。
 
 运行：
-    python benchmark.py
-    python benchmark.py --chunks 5   # 测多个 chunk 取均值
-    python benchmark.py --wav path/to/file.wav  # 用真实音频
+    python benchmark.py                          # 随机噪声，100次
+    python benchmark.py --wav a.wav b.wav        # 真实音频（取第一条）
+    python benchmark.py --wav a.wav --runs 200   # 自定义重复次数
 """
 
 import argparse
@@ -27,218 +27,176 @@ if PROJECT_ROOT not in sys.path:
 from src.preprocess.filters import apply_bandpass
 from src.preprocess.mel import logmel_fixed_size
 
-# ──────────────────────────────────────────
-# 参数（与 main_pi.py 保持一致）
-# ──────────────────────────────────────────
-SAMPLE_RATE    = 2000
-SEG_DURATION   = 2.0
-OVERLAP        = 0.5
-CHUNK_DURATION = 20
-SQA_THRESHOLD  = 0.6
+SAMPLE_RATE  = 2000
+SEG_SAMPLES  = 4000   # 2s
 
-SEG_SAMPLES   = int(SAMPLE_RATE * SEG_DURATION)
-HOP_SAMPLES   = int(SEG_SAMPLES * (1 - OVERLAP))
-CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_DURATION
-
-SQA_MODEL  = os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite")
-DIAG_MODEL = os.path.join(PROJECT_ROOT, "heart_model_quant.tflite")
-CONFIG     = os.path.join(PROJECT_ROOT, "config.yaml")
+DIAG_INT8 = os.path.join(PROJECT_ROOT, "heart_model_quant.tflite")
+DIAG_FP32 = os.path.join(PROJECT_ROOT, "heart_model_fp32.tflite")
+SQA_INT8  = os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite")
+SQA_FP32  = os.path.join(PROJECT_ROOT, "heart_quality_fp32.tflite")
+CONFIG    = os.path.join(PROJECT_ROOT, "config.yaml")
 
 
-def softmax(x):
-    e = np.exp(x - np.max(x))
-    return e / e.sum()
+def load_interp(model_path):
+    interp = tflite.Interpreter(model_path=model_path)
+    interp.allocate_tensors()
+    in_idx  = interp.get_input_details()[0]["index"]
+    out_idx = interp.get_output_details()[0]["index"]
+    return interp, in_idx, out_idx
 
 
-def load_audio_from_wav(path):
+def load_wav_segment(path):
     with wave.open(path, "rb") as wf:
         raw = wf.readframes(wf.getnframes())
     audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-    # 截断或补零到 CHUNK_SAMPLES
-    if len(audio) >= CHUNK_SAMPLES:
-        return audio[:CHUNK_SAMPLES]
-    return np.pad(audio, (0, CHUNK_SAMPLES - len(audio)))
+    if len(audio) >= SEG_SAMPLES:
+        return audio[:SEG_SAMPLES]
+    return np.pad(audio, (0, SEG_SAMPLES - len(audio)))
 
 
-def run_benchmark(audio, mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
-    """
-    对一个 chunk 跑完整推理，返回各阶段计时结果。
-    """
-    total_windows = int((CHUNK_SAMPLES - SEG_SAMPLES) / HOP_SAMPLES) + 1
+def make_segment(wav_paths):
+    """返回一个 2s float32 片段（真实音频或随机噪声）。"""
+    if wav_paths:
+        path = wav_paths[0]
+        print(f"使用 WAV 文件：{path}")
+        return load_wav_segment(path)
+    rng = np.random.default_rng(42)
+    print("使用随机噪声")
+    return rng.uniform(-0.1, 0.1, SEG_SAMPLES).astype(np.float32)
 
-    t_preprocess_filter = []   # 带通滤波（整块一次）
-    t_mel        = []          # mel 计算（per window）
-    t_sqa        = []          # SQA invoke（per window）
-    t_diag       = []          # 诊断 invoke（per valid window）
 
-    # ── 带通滤波（整块）──
-    t0 = time.perf_counter()
-    filtered = apply_bandpass(audio, fs=SAMPLE_RATE, lowcut=25, highcut=400)
-    t_filter_total = (time.perf_counter() - t0) * 1000  # ms
-
-    valid_count = 0
-
-    for win_idx, start in enumerate(range(0, CHUNK_SAMPLES - SEG_SAMPLES + 1, HOP_SAMPLES)):
-        window = filtered[start: start + SEG_SAMPLES]
-        max_val = np.max(np.abs(window))
-        if max_val > 0:
-            window = window / max_val
-
-        # ── mel ──
+def bench_stage(interp, in_idx, out_idx, tensor, runs):
+    """对单个模型重复推理 runs 次，返回延迟列表（ms）。"""
+    latencies = []
+    for _ in range(runs):
         t0 = time.perf_counter()
-        mel    = logmel_fixed_size(y=window, sr=SAMPLE_RATE, mel_cfg=mel_cfg,
-                                   target_shape=(mel_cfg["n_mels"], 64))
-        tensor = mel[np.newaxis, np.newaxis, ...].astype(np.float32)
-        t_mel.append((time.perf_counter() - t0) * 1000)
-
-        # ── SQA ──
-        t0 = time.perf_counter()
-        q_interp.set_tensor(q_in, tensor)
-        q_interp.invoke()
-        q_probs   = softmax(q_interp.get_tensor(q_out)[0])
-        t_sqa.append((time.perf_counter() - t0) * 1000)
-
-        sqa_score = float(q_probs[1])
-        if sqa_score < SQA_THRESHOLD:
-            continue
-
-        # ── 诊断 ──
-        t0 = time.perf_counter()
-        d_interp.set_tensor(d_in, tensor)
-        d_interp.invoke()
-        _ = softmax(d_interp.get_tensor(d_out)[0])
-        t_diag.append((time.perf_counter() - t0) * 1000)
-        valid_count += 1
-
-    return {
-        "total_windows" : total_windows,
-        "valid_windows" : valid_count,
-        "t_filter_ms"   : t_filter_total,
-        "t_mel_ms"      : t_mel,
-        "t_sqa_ms"      : t_sqa,
-        "t_diag_ms"     : t_diag,
-    }
+        interp.set_tensor(in_idx, tensor)
+        interp.invoke()
+        latencies.append((time.perf_counter() - t0) * 1000)
+    return latencies
 
 
-def print_stats(label, values_ms):
-    if not values_ms:
-        print(f"  {label:<20} 无数据")
-        return
-    arr = np.array(values_ms)
-    print(f"  {label:<20} mean={arr.mean():.1f}ms  "
-          f"min={arr.min():.1f}ms  max={arr.max():.1f}ms  "
-          f"std={arr.std():.1f}ms  (n={len(arr)})")
+def stats(vals, label, unit="ms"):
+    arr = np.array(vals)
+    med = np.median(arr)
+    print(f"  {label:<28} median={med:.2f}{unit}  "
+          f"mean={arr.mean():.2f}  min={arr.min():.2f}  "
+          f"max={arr.max():.2f}  (n={len(arr)})")
+    return med
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--chunks", type=int, default=3,
-                        help="测试 chunk 数量（默认 3）")
-    parser.add_argument("--wav", type=str, default=None,
-                        help="使用真实 WAV 文件（否则用随机噪声）")
+    parser.add_argument("--wav", nargs="*", default=None,
+                        help="真实 WAV 文件路径（可多条，取第一条作为测试片段）")
+    parser.add_argument("--runs", type=int, default=100,
+                        help="每阶段重复推理次数（默认 100）")
     args = parser.parse_args()
 
-    # ── 加载配置 ──
     with open(CONFIG) as f:
         mel_cfg = yaml.safe_load(f)["mel"]
 
-    # ── 加载模型 ──
-    print(f"\n{'='*55}")
-    print("模型文件")
-    print(f"{'='*55}")
-    for path, label in [(SQA_MODEL, "SQA"), (DIAG_MODEL, "诊断")]:
-        size_kb = os.path.getsize(path) / 1024
-        print(f"  {label:<6} {os.path.basename(path):<35} {size_kb:.1f} KB")
+    segment = make_segment(args.wav)
 
-    q_interp = tflite.Interpreter(model_path=SQA_MODEL)
-    d_interp = tflite.Interpreter(model_path=DIAG_MODEL)
-    q_interp.allocate_tensors()
-    d_interp.allocate_tensors()
-    q_in  = q_interp.get_input_details()[0]["index"]
-    q_out = q_interp.get_output_details()[0]["index"]
-    d_in  = d_interp.get_input_details()[0]["index"]
-    d_out = d_interp.get_output_details()[0]["index"]
+    # ── 带通滤波 ──
+    t_filter = []
+    for _ in range(args.runs):
+        t0 = time.perf_counter()
+        filtered = apply_bandpass(segment, fs=SAMPLE_RATE, lowcut=25, highcut=400)
+        t_filter.append((time.perf_counter() - t0) * 1000)
+    # 用最后一次的 filtered 作为后续输入
+    filtered = apply_bandpass(segment, fs=SAMPLE_RATE, lowcut=25, highcut=400)
+    mx = np.max(np.abs(filtered))
+    if mx > 0:
+        filtered = filtered / mx
 
-    # ── 准备音频 ──
-    if args.wav:
-        print(f"\n使用 WAV 文件：{args.wav}")
-        base_audio = load_audio_from_wav(args.wav)
-    else:
-        print(f"\n使用随机噪声（{CHUNK_DURATION}s × {args.chunks} chunks）")
-        rng = np.random.default_rng(42)
-        base_audio = rng.uniform(-0.1, 0.1, CHUNK_SAMPLES).astype(np.float32)
+    # ── Mel 频谱 ──
+    t_mel = []
+    for _ in range(args.runs):
+        t0 = time.perf_counter()
+        mel = logmel_fixed_size(y=filtered, sr=SAMPLE_RATE, mel_cfg=mel_cfg,
+                                target_shape=(mel_cfg["n_mels"], 64))
+        t_mel.append((time.perf_counter() - t0) * 1000)
+    mel = logmel_fixed_size(y=filtered, sr=SAMPLE_RATE, mel_cfg=mel_cfg,
+                            target_shape=(mel_cfg["n_mels"], 64))
+    tensor = mel[np.newaxis, np.newaxis, ...].astype(np.float32)
 
-    # ── 系统基线 ──
-    proc = psutil.Process()
-    cpu_before  = psutil.cpu_percent(interval=1)
-    mem_before  = proc.memory_info().rss / 1024 / 1024
+    # ── 加载四个模型 ──
+    sqa_fp32,  sqa_fp32_in,  sqa_fp32_out  = load_interp(SQA_FP32)
+    sqa_int8,  sqa_int8_in,  sqa_int8_out  = load_interp(SQA_INT8)
+    diag_fp32, diag_fp32_in, diag_fp32_out = load_interp(DIAG_FP32)
+    diag_int8, diag_int8_in, diag_int8_out = load_interp(DIAG_INT8)
 
-    # ── 跑 benchmark ──
-    all_filter, all_mel, all_sqa, all_diag, all_chunk = [], [], [], [], []
+    t_sqa_fp32  = bench_stage(sqa_fp32,  sqa_fp32_in,  sqa_fp32_out,  tensor, args.runs)
+    t_sqa_int8  = bench_stage(sqa_int8,  sqa_int8_in,  sqa_int8_out,  tensor, args.runs)
+    t_diag_fp32 = bench_stage(diag_fp32, diag_fp32_in, diag_fp32_out, tensor, args.runs)
+    t_diag_int8 = bench_stage(diag_int8, diag_int8_in, diag_int8_out, tensor, args.runs)
 
-    print(f"\n{'='*55}")
-    print(f"推理延迟（{args.chunks} chunks）")
-    print(f"{'='*55}")
-
-    for i in range(args.chunks):
-        # 每个 chunk 略微加点噪声，避免完全相同
-        rng2 = np.random.default_rng(i)
-        audio = base_audio + rng2.uniform(-0.01, 0.01, CHUNK_SAMPLES).astype(np.float32)
-
-        t_chunk_start = time.perf_counter()
-        result = run_benchmark(audio, mel_cfg, q_interp, d_interp,
-                               q_in, q_out, d_in, d_out)
-        t_chunk_total = (time.perf_counter() - t_chunk_start) * 1000
-
-        all_filter.append(result["t_filter_ms"])
-        all_mel.extend(result["t_mel_ms"])
-        all_sqa.extend(result["t_sqa_ms"])
-        all_diag.extend(result["t_diag_ms"])
-        all_chunk.append(t_chunk_total)
-
-        print(f"  Chunk {i+1:02d}  总耗时={t_chunk_total/1000:.2f}s  "
-              f"窗口={result['total_windows']}  有效={result['valid_windows']}")
-
-    # ── 汇总 ──
-    print(f"\n{'='*55}")
-    print("各阶段平均耗时")
-    print(f"{'='*55}")
-    filter_arr = np.array(all_filter)
-    print(f"  {'带通滤波(整块)':<20} mean={filter_arr.mean():.1f}ms  "
-          f"min={filter_arr.min():.1f}ms  max={filter_arr.max():.1f}ms")
-    print_stats("Mel 频谱(per win)",  all_mel)
-    print_stats("SQA invoke(per win)", all_sqa)
-    print_stats("诊断 invoke(per win)", all_diag)
-
-    chunk_arr = np.array(all_chunk)
-    print(f"\n  {'Chunk 总耗时':<20} mean={chunk_arr.mean()/1000:.2f}s  "
-          f"min={chunk_arr.min()/1000:.2f}s  max={chunk_arr.max()/1000:.2f}s")
-    print(f"  采集时长                {CHUNK_DURATION}s  "
-          f"→ 实时性：{'✓ 可跟上' if chunk_arr.mean() < CHUNK_DURATION * 1000 else '✗ 跟不上'}")
+    # ── 模型文件大小 ──
+    sizes = {
+        "SQA  FP32" : os.path.getsize(SQA_FP32)  / 1024,
+        "SQA  INT8" : os.path.getsize(SQA_INT8)  / 1024,
+        "Diag FP32" : os.path.getsize(DIAG_FP32) / 1024,
+        "Diag INT8" : os.path.getsize(DIAG_INT8) / 1024,
+    }
 
     # ── 资源占用 ──
-    cpu_after = psutil.cpu_percent(interval=1)
-    mem_after = proc.memory_info().rss / 1024 / 1024
-    print(f"\n{'='*55}")
-    print("系统资源占用")
-    print(f"{'='*55}")
-    print(f"  CPU（推理前）  {cpu_before:.1f}%")
-    print(f"  CPU（推理后）  {cpu_after:.1f}%")
-    print(f"  内存（推理前） {mem_before:.1f} MB")
-    print(f"  内存（推理后） {mem_after:.1f} MB  （Δ {mem_after - mem_before:+.1f} MB）")
+    proc = psutil.Process()
+    cpu_pct = psutil.cpu_percent(interval=1)
+    mem_mb  = proc.memory_info().rss / 1024 / 1024
     temp = None
     try:
         temps = psutil.sensors_temperatures()
         if "cpu_thermal" in temps:
             temp = temps["cpu_thermal"][0].current
-        elif "coretemp" in temps:
-            temp = temps["coretemp"][0].current
     except Exception:
         pass
-    if temp:
-        print(f"  CPU 温度       {temp:.1f}°C")
 
-    print(f"\n{'='*55}\n")
+    # ══════════════ 输出 ══════════════
+    W = 60
+    print(f"\n{'='*W}")
+    print(f"模型文件大小")
+    print(f"{'='*W}")
+    for name, kb in sizes.items():
+        print(f"  {name:<12} {kb:.1f} KB")
+
+    print(f"\n{'='*W}")
+    print(f"各阶段延迟（median of {args.runs} runs，单个 2s 窗口）")
+    print(f"{'='*W}")
+    med_filter    = stats(t_filter,    "Bandpass filter")
+    med_mel       = stats(t_mel,       "Log-Mel spectrogram")
+    med_sqa_fp32  = stats(t_sqa_fp32,  "SQA model     FP32")
+    med_sqa_int8  = stats(t_sqa_int8,  "SQA model     INT8")
+    med_diag_fp32 = stats(t_diag_fp32, "Diag model    FP32")
+    med_diag_int8 = stats(t_diag_int8, "Diag model    INT8")
+
+    print(f"\n{'='*W}")
+    print("FP32 vs INT8 对比（Table 6.1）")
+    print(f"{'='*W}")
+    print(f"  {'Stage':<28} {'FP32 (ms)':>10} {'INT8 (ms)':>10} {'Speedup':>10}")
+    print(f"  {'-'*58}")
+    print(f"  {'Bandpass filter':<28} {'—':>10} {'—':>10} {'—':>10}")
+    print(f"  {'Log-Mel spectrogram':<28} {'—':>10} {'—':>10} {'—':>10}")
+    for stage, fp32, int8 in [("SQA model",  med_sqa_fp32,  med_sqa_int8),
+                               ("Diag model", med_diag_fp32, med_diag_int8)]:
+        speedup = fp32 / int8 if int8 > 0 else float("nan")
+        print(f"  {stage:<28} {fp32:>9.2f}ms {int8:>9.2f}ms {speedup:>9.2f}x")
+
+    tot_fp32 = med_filter + med_mel + med_sqa_fp32 + med_diag_fp32
+    tot_int8 = med_filter + med_mel + med_sqa_int8 + med_diag_int8
+    print(f"  {'Total per segment':<28} {tot_fp32:>9.2f}ms {tot_int8:>9.2f}ms")
+    print(f"\n  实时性约束：< 2000ms/segment")
+    print(f"  FP32 总延迟：{tot_fp32:.1f}ms  {'✓' if tot_fp32 < 2000 else '✗'}")
+    print(f"  INT8 总延迟：{tot_int8:.1f}ms  {'✓' if tot_int8 < 2000 else '✗'}")
+
+    print(f"\n{'='*W}")
+    print("系统资源占用（Table 6.2）")
+    print(f"{'='*W}")
+    print(f"  Peak CPU utilisation   {cpu_pct:.1f}%")
+    print(f"  Memory (RSS)           {mem_mb:.1f} MB")
+    if temp:
+        print(f"  CPU temperature        {temp:.1f} °C")
+    print(f"{'='*W}\n")
 
 
 if __name__ == "__main__":

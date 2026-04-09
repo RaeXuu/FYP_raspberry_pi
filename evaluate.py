@@ -1,18 +1,19 @@
 """
 量化模型准确率评估（Pi 端）
-对测试集每条音频跑完整推理流水线，输出准确率、灵敏度、特异度、F1。
+对测试集每条音频跑完整推理流水线，对比 FP32 vs INT8 准确率。
 
-标签约定（与训练一致）：
-    0 = Normal
-    1 = Abnormal
+诊断模型评估：
+    python evaluate.py --mode diag
 
-运行：
-    python evaluate.py --csv data/metadata_physionet.csv
-    python evaluate.py --csv data/test_split.csv          # 推荐：只传测试集
-    python evaluate.py --csv data/test_split.csv --verbose # 逐条打印结果
+SQA 模型评估：
+    python evaluate.py --mode sqa
+
+两者都跑：
+    python evaluate.py --mode both
 """
 
 import argparse
+import csv
 import os
 import sys
 import time
@@ -20,6 +21,7 @@ import time
 import numpy as np
 import yaml
 import ai_edge_litert.interpreter as tflite
+from tqdm import tqdm
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -31,14 +33,23 @@ from src.preprocess.segment import segment_audio
 from src.preprocess.mel import logmel_fixed_size
 
 # ──────────────────────────────────────────
-# 配置（与 main_pi.py 保持一致）
+# 模型路径
 # ──────────────────────────────────────────
-SQA_THRESHOLD  = 0.6
-DIAG_THRESHOLD = 0.5   # prob_normal > 此值 → Normal
+DIAG_INT8  = os.path.join(PROJECT_ROOT, "heart_model_quant.tflite")
+DIAG_FP32  = os.path.join(PROJECT_ROOT, "heart_model_fp32.tflite")
+SQA_INT8   = os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite")
+SQA_FP32   = os.path.join(PROJECT_ROOT, "heart_quality_fp32.tflite")
 
-SQA_MODEL  = os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite")
-DIAG_MODEL = os.path.join(PROJECT_ROOT, "heart_model_quant.tflite")
-CONFIG     = os.path.join(PROJECT_ROOT, "config.yaml")
+# 测试集 / metadata
+DIAG_SPLIT    = os.path.join(PROJECT_ROOT, "data", "test_split.csv")
+SQA_SPLIT     = os.path.join(PROJECT_ROOT, "data", "test_split_sqa.csv")
+DIAG_META     = os.path.join(PROJECT_ROOT, "data", "metadata_physionet.csv")
+SQA_META      = os.path.join(PROJECT_ROOT, "data", "metadata_quality.csv")
+
+CONFIG        = os.path.join(PROJECT_ROOT, "config.yaml")
+
+SQA_THRESHOLD  = 0.6   # 仅诊断模式的 SQA 门槛（连续加权时不用）
+DIAG_THRESHOLD = 0.5
 
 
 def softmax(x):
@@ -46,43 +57,60 @@ def softmax(x):
     return e / e.sum()
 
 
-def predict_file(filepath, mel_cfg, q_interp, d_interp,
-                 q_in, q_out, d_in, d_out):
-    """
-    对单条音频文件跑完整推理，返回 (pred_label, avg_prob_normal, valid_segs, total_segs, elapsed_ms)
-    pred_label: 1=Normal, 0=Abnormal, None=全部低质量
-    """
-    t0 = time.perf_counter()
+def load_interp(model_path):
+    interp = tflite.Interpreter(model_path=model_path)
+    interp.allocate_tensors()
+    in_idx  = interp.get_input_details()[0]["index"]
+    out_idx = interp.get_output_details()[0]["index"]
+    return interp, in_idx, out_idx
 
+
+def build_lookup(meta_path, split_path):
+    """从 metadata CSV 建立 fname → (filepath, label) 字典，再按 split CSV 过滤。"""
+    meta = {}
+    with open(meta_path, newline="") as f:
+        for row in csv.DictReader(f):
+            meta[row["fname"]] = (row["filepath"], int(row["label"]))
+
+    fnames = set()
+    with open(split_path, newline="") as f:
+        for row in csv.DictReader(f):
+            fnames.add(row["fname"])
+
+    rows = []
+    for fname in sorted(fnames):
+        if fname in meta:
+            fp, label = meta[fname]
+            rows.append({"fname": fname, "filepath": fp, "label": label})
+    return rows
+
+
+def predict_diag(filepath, mel_cfg, sqa_interp, sqa_in, sqa_out,
+                 diag_interp, diag_in, diag_out):
+    """诊断模型推理：SQA 加权平均 → pred label。"""
+    t0 = time.perf_counter()
     y, sr = load_wav(filepath, target_sr=2000)
     y = apply_bandpass(y, fs=sr, lowcut=25, highcut=400)
     segments = segment_audio(y, sr)
 
-    valid_results = []   # [(sqa_score, prob_normal), ...]
-
+    valid_results = []
     for seg in segments:
-        max_val = np.max(np.abs(seg))
-        if max_val > 0:
-            seg = seg / max_val
-
+        mx = np.max(np.abs(seg))
+        if mx > 0:
+            seg = seg / mx
         mel    = logmel_fixed_size(y=seg, sr=sr, mel_cfg=mel_cfg,
                                    target_shape=(mel_cfg["n_mels"], 64))
         tensor = mel[np.newaxis, np.newaxis, ...].astype(np.float32)
 
-        # SQA
-        q_interp.set_tensor(q_in, tensor)
-        q_interp.invoke()
-        q_probs   = softmax(q_interp.get_tensor(q_out)[0])
-        sqa_score = float(q_probs[1])
-
+        sqa_interp.set_tensor(sqa_in, tensor)
+        sqa_interp.invoke()
+        sqa_score = float(softmax(sqa_interp.get_tensor(sqa_out)[0])[1])
         if sqa_score < SQA_THRESHOLD:
             continue
 
-        # 诊断
-        d_interp.set_tensor(d_in, tensor)
-        d_interp.invoke()
-        d_probs     = softmax(d_interp.get_tensor(d_out)[0])
-        prob_normal = float(d_probs[0])
+        diag_interp.set_tensor(diag_in, tensor)
+        diag_interp.invoke()
+        prob_normal = float(softmax(diag_interp.get_tensor(diag_out)[0])[0])
         valid_results.append((sqa_score, prob_normal))
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -94,130 +122,191 @@ def predict_file(filepath, mel_cfg, q_interp, d_interp,
     probs    = [r[1] for r in valid_results]
     avg_prob = sum(w * p for w, p in zip(weights, probs)) / sum(weights)
     pred     = 0 if avg_prob > DIAG_THRESHOLD else 1
-
     return pred, avg_prob, len(valid_results), len(segments), elapsed_ms
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--csv", required=True,
-                        help="测试集 CSV，需含 filepath 和 label 列（1=Normal, 0=Abnormal）")
-    parser.add_argument("--verbose", action="store_true",
-                        help="逐条打印预测结果")
-    args = parser.parse_args()
+def predict_sqa(filepath, mel_cfg, sqa_interp, sqa_in, sqa_out):
+    """SQA 模型推理：多窗口投票 → pred label (1=Bad/positive, 0=Good)。"""
+    t0 = time.perf_counter()
+    y, sr = load_wav(filepath, target_sr=2000)
+    y = apply_bandpass(y, fs=sr, lowcut=25, highcut=400)
+    segments = segment_audio(y, sr)
 
-    # ── 加载配置和模型 ──
-    with open(CONFIG) as f:
-        mel_cfg = yaml.safe_load(f)["mel"]
+    prob_bad_list = []
+    for seg in segments:
+        mx = np.max(np.abs(seg))
+        if mx > 0:
+            seg = seg / mx
+        mel    = logmel_fixed_size(y=seg, sr=sr, mel_cfg=mel_cfg,
+                                   target_shape=(mel_cfg["n_mels"], 64))
+        tensor = mel[np.newaxis, np.newaxis, ...].astype(np.float32)
 
-    q_interp = tflite.Interpreter(model_path=SQA_MODEL)
-    d_interp = tflite.Interpreter(model_path=DIAG_MODEL)
-    q_interp.allocate_tensors()
-    d_interp.allocate_tensors()
-    q_in  = q_interp.get_input_details()[0]["index"]
-    q_out = q_interp.get_output_details()[0]["index"]
-    d_in  = d_interp.get_input_details()[0]["index"]
-    d_out = d_interp.get_output_details()[0]["index"]
+        sqa_interp.set_tensor(sqa_in, tensor)
+        sqa_interp.invoke()
+        # label 约定（reversed）：Bad=1（正类），Good=0
+        prob_bad = float(softmax(sqa_interp.get_tensor(sqa_out)[0])[1])
+        prob_bad_list.append(prob_bad)
 
-    # ── 读取测试集 ──
-    import csv
-    rows = []
-    with open(args.csv, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    total     = len(rows)
-    skipped   = 0   # 全部低质量，无法判断
+    if not prob_bad_list:
+        return None, None, elapsed_ms
+
+    avg_prob_bad = float(np.mean(prob_bad_list))
+    pred = 1 if avg_prob_bad > 0.5 else 0
+    return pred, avg_prob_bad, elapsed_ms
+
+
+def compute_metrics(tp, tn, fp, fn):
+    evaluated = tp + tn + fp + fn
+    if evaluated == 0:
+        return {}
+    acc  = (tp + tn) / evaluated
+    se   = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    sp   = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    f1   = (2 * prec * se / (prec + se)) if (prec + se) > 0 else 0.0
+    return {"acc": acc, "se": se, "sp": sp, "f1": f1,
+            "mscore": (se + sp) / 2, "evaluated": evaluated,
+            "tp": tp, "tn": tn, "fp": fp, "fn": fn}
+
+
+def run_diag_eval(rows, mel_cfg, sqa_path, diag_path, label):
+    print(f"\n  [{label}]  SQA={os.path.basename(sqa_path)}  "
+          f"DIAG={os.path.basename(diag_path)}")
+    sqa_interp,  sqa_in,  sqa_out  = load_interp(sqa_path)
+    diag_interp, diag_in, diag_out = load_interp(diag_path)
+
+    tp = tn = fp = fn = skipped = 0
     elapsed_all = []
 
-    # 混淆矩阵计数
-    tp = tn = fp = fn = 0   # tp/tn/fp/fn 以 Abnormal(0) 为正类
+    for row in tqdm(rows, desc=f"    {label}", unit="file", leave=True):
+        fp_file  = row["filepath"]
+        gt_label = row["label"]   # 1=Abnormal, 0=Normal  (physionet convention)
 
-    print(f"\n{'='*60}")
-    print(f"测试集：{args.csv}  （{total} 条）")
-    print(f"{'='*60}")
-
-    for i, row in enumerate(rows):
-        filepath = row["filepath"]
-        gt_label = int(row["label"])   # 0=Normal, 1=Abnormal
-
-        if not os.path.exists(filepath):
-            print(f"  [{i+1:04d}] 文件不存在，跳过：{filepath}")
+        if not os.path.exists(fp_file):
             skipped += 1
             continue
 
-        pred, avg_prob, valid_segs, total_segs, elapsed_ms = predict_file(
-            filepath, mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out)
-
+        pred, _, valid_segs, total_segs, elapsed_ms = predict_diag(
+            fp_file, mel_cfg, sqa_interp, sqa_in, sqa_out,
+            diag_interp, diag_in, diag_out)
         elapsed_all.append(elapsed_ms)
 
         if pred is None:
             skipped += 1
-            if args.verbose:
-                print(f"  [{i+1:04d}] {os.path.basename(filepath):<20} "
-                      f"GT={'Normal' if gt_label==1 else 'Abnormal':<8} "
-                      f"Pred=SKIP (0/{total_segs} segs passed SQA)")
             continue
 
-        pred_str = "Normal" if pred == 0 else "Abnormal"
-        gt_str   = "Normal" if gt_label == 0 else "Abnormal"
-        correct  = "✓" if pred == gt_label else "✗"
+        if gt_label == 1 and pred == 1:   tp += 1
+        elif gt_label == 0 and pred == 0: tn += 1
+        elif gt_label == 0 and pred == 1: fp += 1
+        else:                             fn += 1
 
-        # 以 Abnormal(1) 为正类统计混淆矩阵
-        if gt_label == 1 and pred == 1:
-            tp += 1
-        elif gt_label == 0 and pred == 0:
-            tn += 1
-        elif gt_label == 0 and pred == 1:
-            fp += 1
-        else:
-            fn += 1
+    m = compute_metrics(tp, tn, fp, fn)
+    if not m:
+        print("    无可评估样本")
+        return None
 
-        if args.verbose:
-            print(f"  [{i+1:04d}] {os.path.basename(filepath):<20} "
-                  f"GT={gt_str:<8} Pred={pred_str:<8} "
-                  f"prob_N={avg_prob:.3f}  "
-                  f"valid={valid_segs}/{total_segs}  {correct}")
+    arr = np.array(elapsed_all) if elapsed_all else np.array([0])
+    print(f"    Accuracy={m['acc']*100:.1f}%  M-Score={m['mscore']*100:.1f}%  "
+          f"Se={m['se']*100:.1f}%  Sp={m['sp']*100:.1f}%  "
+          f"(evaluated={m['evaluated']}, skipped={skipped})")
+    print(f"    推理耗时 mean={arr.mean():.0f}ms  "
+          f"min={arr.min():.0f}ms  max={arr.max():.0f}ms")
+    return m
 
-    # ── 计算指标 ──
-    evaluated = tp + tn + fp + fn
-    if evaluated == 0:
-        print("没有可评估的样本。")
+
+def run_sqa_eval(rows, mel_cfg, sqa_path, label):
+    print(f"\n  [{label}]  SQA={os.path.basename(sqa_path)}")
+    sqa_interp, sqa_in, sqa_out = load_interp(sqa_path)
+
+    tp = tn = fp = fn = skipped = 0
+
+    for row in tqdm(rows, desc=f"    {label}", unit="file", leave=True):
+        fp_file  = row["filepath"]
+        gt_label = row["label"]   # metadata_quality: 1=Good, 0=Bad
+        # SQA 正类 = Bad(0 in metadata) → 反转：gt_sqa=1 if Bad
+        gt_sqa = 1 if gt_label == 0 else 0
+
+        if not os.path.exists(fp_file):
+            skipped += 1
+            continue
+
+        pred, _, elapsed_ms = predict_sqa(fp_file, mel_cfg, sqa_interp, sqa_in, sqa_out)
+
+        if pred is None:
+            skipped += 1
+            continue
+
+        if gt_sqa == 1 and pred == 1:   tp += 1
+        elif gt_sqa == 0 and pred == 0: tn += 1
+        elif gt_sqa == 0 and pred == 1: fp += 1
+        else:                           fn += 1
+
+    m = compute_metrics(tp, tn, fp, fn)
+    if not m:
+        print("    无可评估样本")
+        return None
+
+    print(f"    Accuracy={m['acc']*100:.1f}%  M-Score={m['mscore']*100:.1f}%  "
+          f"Se(Bad)={m['se']*100:.1f}%  Sp(Good)={m['sp']*100:.1f}%  "
+          f"(evaluated={m['evaluated']}, skipped={skipped})")
+    return m
+
+
+def print_comparison(fp32_m, int8_m, mode="diag"):
+    if fp32_m is None or int8_m is None:
         return
-
-    accuracy    = (tp + tn) / evaluated
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0   # Abnormal recall
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0   # Normal recall
-    precision   = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    f1          = (2 * precision * sensitivity / (precision + sensitivity)
-                   if (precision + sensitivity) > 0 else 0.0)
-
     print(f"\n{'='*60}")
-    print("评估结果")
-    print(f"{'='*60}")
-    print(f"  样本总数     {total}")
-    print(f"  有效评估     {evaluated}  （跳过 {skipped} 条低质量/缺失）")
-    print(f"")
-    print(f"  Accuracy     {accuracy*100:.1f}%")
-    print(f"  Sensitivity  {sensitivity*100:.1f}%   ← 异常检出率（Abnormal recall）")
-    print(f"  Specificity  {specificity*100:.1f}%   ← 正常判对率（Normal recall）")
-    print(f"  Precision    {precision*100:.1f}%")
-    print(f"  F1 Score     {f1*100:.1f}%")
-    print(f"")
-    print(f"  混淆矩阵（正类 = Abnormal）")
-    print(f"                   Pred Normal  Pred Abnormal")
-    print(f"  True Normal       {tn:>8}       {fp:>8}")
-    print(f"  True Abnormal     {fn:>8}       {tp:>8}")
-
-    if elapsed_all:
-        arr = np.array(elapsed_all)
-        print(f"")
-        print(f"  推理耗时（per file）")
-        print(f"    mean={arr.mean():.0f}ms  "
-              f"min={arr.min():.0f}ms  max={arr.max():.0f}ms")
-
+    if mode == "diag":
+        print("FP32 vs INT8 对比（诊断模型，Table 5.5 / Table 6.3）")
+        print(f"{'='*60}")
+        print(f"  {'Metric':<14} {'FP32':>10} {'INT8':>10} {'Change':>10}")
+        print(f"  {'-'*44}")
+        for key, label in [("mscore","M-Score"), ("se","Sensitivity"),
+                            ("sp","Specificity"), ("acc","Accuracy")]:
+            v32, v8 = fp32_m[key]*100, int8_m[key]*100
+            print(f"  {label:<14} {v32:>9.1f}% {v8:>9.1f}% {v8-v32:>+9.1f}%")
+    else:
+        print("FP32 vs INT8 对比（SQA 模型）")
+        print(f"{'='*60}")
+        print(f"  {'Metric':<14} {'FP32':>10} {'INT8':>10} {'Change':>10}")
+        print(f"  {'-'*44}")
+        for key, label in [("mscore","M-Score"), ("se","Se(Bad)"),
+                            ("sp","Sp(Good)"), ("acc","Accuracy")]:
+            v32, v8 = fp32_m[key]*100, int8_m[key]*100
+            print(f"  {label:<14} {v32:>9.1f}% {v8:>9.1f}% {v8-v32:>+9.1f}%")
     print(f"{'='*60}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["diag", "sqa", "both"], default="both",
+                        help="评估模式：diag / sqa / both（默认 both）")
+    args = parser.parse_args()
+
+    with open(CONFIG) as f:
+        mel_cfg = yaml.safe_load(f)["mel"]
+
+    if args.mode in ("diag", "both"):
+        print(f"\n{'='*60}")
+        print(f"诊断模型评估（test_split.csv，{os.path.basename(DIAG_SPLIT)}）")
+        rows_diag = build_lookup(DIAG_META, DIAG_SPLIT)
+        print(f"  测试录音数：{len(rows_diag)}")
+        print(f"{'='*60}")
+        m_diag_fp32 = run_diag_eval(rows_diag, mel_cfg, SQA_FP32,  DIAG_FP32,  "FP32")
+        m_diag_int8 = run_diag_eval(rows_diag, mel_cfg, SQA_INT8,  DIAG_INT8,  "INT8")
+        print_comparison(m_diag_fp32, m_diag_int8, mode="diag")
+
+    if args.mode in ("sqa", "both"):
+        print(f"\n{'='*60}")
+        print(f"SQA 模型评估（test_split_sqa.csv，{os.path.basename(SQA_SPLIT)}）")
+        rows_sqa = build_lookup(SQA_META, SQA_SPLIT)
+        print(f"  测试录音数：{len(rows_sqa)}")
+        print(f"{'='*60}")
+        m_sqa_fp32 = run_sqa_eval(rows_sqa, mel_cfg, SQA_FP32, "FP32")
+        m_sqa_int8 = run_sqa_eval(rows_sqa, mel_cfg, SQA_INT8, "INT8")
+        print_comparison(m_sqa_fp32, m_sqa_int8, mode="sqa")
 
 
 if __name__ == "__main__":
