@@ -551,76 +551,18 @@ FP32 vs INT8 对比（Table 6.1）
 
 
 
-s
 
-
-
-
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python evaluate.py --mode both
+**rasp4b@Rasp4B**:**~ $** /home/rasp4b/FypPi/.venv/bin/python /home/rasp4b/FypPi/evaluate.py --mode sqa
 
   
 
 ============================================================
 
-诊断模型评估（test_split.csv，test_split.csv）
+SQA 模型评估（test_split_sqa.csv）
 
-  测试录音数：288
+  测试录音数：324  Bad(label=0)=32  Good(label=1)=292
 
-============================================================
-
-  
-
-  [FP32]  SQA=heart_quality_fp32.tflite  DIAG=heart_model_fp32.tflite
-
-INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
-
-    FP32: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:22<00:00,  2.02file/s]
-
-    Accuracy=65.4%  M-Score=68.9%  Se=97.9%  Sp=40.0%  (evaluated=107, skipped=181)
-
-    推理耗时 mean=493ms  min=139ms  max=4622ms
-
-  
-
-  [INT8]  SQA=heart_quality_quant.tflite  DIAG=heart_model_quant.tflite
-
-    INT8: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:14<00:00,  2.13file/s]
-
-    Accuracy=65.4%  M-Score=68.9%  Se=97.9%  Sp=40.0%  (evaluated=107, skipped=181)
-
-    推理耗时 mean=468ms  min=131ms  max=1920ms
-
-  
-
-============================================================
-
-FP32 vs INT8 对比（诊断模型，Table 5.5 / Table 6.3）
-
-============================================================
-
-  Metric               FP32       INT8     Change
-
-  --------------------------------------------
-
-  M-Score             68.9%      68.9%      +0.0%
-
-  Sensitivity         97.9%      97.9%      +0.0%
-
-  Specificity         40.0%      40.0%      +0.0%
-
-  Accuracy            65.4%      65.4%      +0.0%
-
-============================================================
-
-  
-
-  
-
-============================================================
-
-SQA 模型评估（test_split_sqa.csv，test_split_sqa.csv）
-
-  测试录音数：324
+  索引约定：SQA_IDX_BAD=1  SQA_IDX_GOOD=0
 
 ============================================================
 
@@ -628,17 +570,23 @@ SQA 模型评估（test_split_sqa.csv，test_split_sqa.csv）
 
   [FP32]  SQA=heart_quality_fp32.tflite
 
-    FP32: 100%|█████████████████████████████████████████████████████████████████████| 324/324 [02:12<00:00,  2.44file/s]
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
 
-    Accuracy=80.6%  M-Score=82.3%  Se(Bad)=84.4%  Sp(Good)=80.1%  (evaluated=324, skipped=0)
+    FP32: 100%|█████████████████████████████████████████████████████████████████████| 324/324 [02:22<00:00,  2.27file/s]
+
+    TP=435 TN=4607 FP=1638 FN=46  (skipped=0)
+
+    Accuracy=75.0%  M-Score=82.1%  Se(Bad)=90.4%  Sp(Good)=73.8%  (evaluated=6726 切片)
 
   
 
   [INT8]  SQA=heart_quality_quant.tflite
 
-    INT8: 100%|█████████████████████████████████████████████████████████████████████| 324/324 [02:10<00:00,  2.48file/s]
+    INT8: 100%|█████████████████████████████████████████████████████████████████████| 324/324 [02:07<00:00,  2.55file/s]
 
-    Accuracy=80.6%  M-Score=82.3%  Se(Bad)=84.4%  Sp(Good)=80.1%  (evaluated=324, skipped=0)
+    TP=434 TN=4605 FP=1640 FN=47  (skipped=0)
+
+    Accuracy=74.9%  M-Score=82.0%  Se(Bad)=90.2%  Sp(Good)=73.7%  (evaluated=6726 切片)
 
   
 
@@ -652,12 +600,129 @@ FP32 vs INT8 对比（SQA 模型）
 
   --------------------------------------------
 
-  M-Score             82.3%      82.3%      +0.0%
+  M-Score             82.1%      82.0%      -0.1%
 
-  Se(Bad)             84.4%      84.4%      +0.0%
+  Se(Bad)             90.4%      90.2%      -0.2%
 
-  Sp(Good)            80.1%      80.1%      +0.0%
+  Sp(Good)            73.8%      73.7%      -0.0%
 
-  Accuracy            80.6%      80.6%      +0.0%
+  Accuracy            75.0%      74.9%      -0.0%
+
+============================================================
+
+  
+
+**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python evaluate.py --mode diag
+
+  
+
+============================================================
+
+诊断模型评估（解耦，无 SQA 门控，test_split.csv）
+
+  测试录音数：288
+
+============================================================
+
+  
+
+  [FP32]  DIAG=heart_model_fp32.tflite
+
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+
+    FP32: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:11<00:00,  2.20file/s]
+
+    Accuracy=84.2%  M-Score=87.1%  Se=91.7%  Sp=82.4%  (evaluated=6273 切片, skipped=0 文件)
+
+    推理耗时 mean=14.27ms  min=13.96ms  max=24.55ms
+
+  
+
+  [INT8]  DIAG=heart_model_quant.tflite
+
+    INT8: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:00<00:00,  2.39file/s]
+
+    Accuracy=84.1%  M-Score=87.0%  Se=91.7%  Sp=82.3%  (evaluated=6273 切片, skipped=0 文件)
+
+    推理耗时 mean=13.89ms  min=13.59ms  max=21.04ms
+
+  
+
+============================================================
+
+FP32 vs INT8 对比（诊断模型，解耦）
+
+============================================================
+
+  Metric               FP32       INT8     Change
+
+  --------------------------------------------
+
+  M-Score             87.1%      87.0%      -0.1%
+
+  Sensitivity         91.7%      91.7%      +0.0%
+
+  Specificity         82.4%      82.3%      -0.1%
+
+  Accuracy            84.2%      84.1%      -0.1%
+
+============================================================
+
+
+**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python evaluate.py --mode both
+
+  
+
+============================================================
+
+诊断模型评估（耦合：SQA 门控 + 加权平均，test_split.csv）
+
+  测试录音数：288
+
+  SQA_THRESHOLD=0.5（sm[1] 分数，低于此值的窗口被过滤，与 main_pi.py 对齐）
+
+============================================================
+
+  
+
+  [FP32]  SQA=heart_quality_fp32.tflite  DIAG=heart_model_fp32.tflite
+
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+
+    FP32: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:31<00:00,  1.91file/s]
+
+    Accuracy=67.8%  M-Score=75.3%  Se=100.0%  Sp=50.5%  (evaluated=143, skipped=145)
+
+    推理耗时 mean=524ms  min=144ms  max=9750ms
+
+  
+
+  [INT8]  SQA=heart_quality_quant.tflite  DIAG=heart_model_quant.tflite
+
+    INT8: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:19<00:00,  2.07file/s]
+
+    Accuracy=67.6%  M-Score=75.0%  Se=100.0%  Sp=50.0%  (evaluated=142, skipped=146)
+
+    推理耗时 mean=482ms  min=136ms  max=1865ms
+
+  
+
+============================================================
+
+FP32 vs INT8 对比（诊断模型，耦合 SQA 门控）
+
+============================================================
+
+  Metric               FP32       INT8     Change
+
+  --------------------------------------------
+
+  M-Score             75.3%      75.0%      -0.3%
+
+  Sensitivity        100.0%     100.0%      +0.0%
+
+  Specificity         50.5%      50.0%      -0.5%
+
+  Accuracy            67.8%      67.6%      -0.2%
 
 ============================================================
