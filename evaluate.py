@@ -343,7 +343,11 @@ def run_sqa_eval(rows, mel_cfg, sqa_path, label):
 
 
 def run_diag_only_eval(rows, mel_cfg, diag_path, label):
-    """诊断模型评估（解耦，无 SQA 门控）。"""
+    """
+    诊断模型评估（解耦，无 SQA 门控）。
+    切片级评估，与 evaluate_pc.py 对齐：
+    每个切片独立 argmax → 切片级 TP/TN/FP/FN，文件 GT label 作为每条切片的标签。
+    """
     print(f"\n  [{label}]  DIAG={os.path.basename(diag_path)}")
     interp, in_idx, out_idx = load_interp(diag_path)
 
@@ -358,18 +362,22 @@ def run_diag_only_eval(rows, mel_cfg, diag_path, label):
             skipped += 1
             continue
 
-        pred, _, _, elapsed_ms = predict_diag_only(
-            filepath, mel_cfg, interp, in_idx, out_idx)
-        elapsed_all.append(elapsed_ms)
-
-        if pred is None:
+        tensors = load_tensors(filepath, mel_cfg)
+        if not tensors:
             skipped += 1
             continue
 
-        if   gt_label == 1 and pred == 1: tp += 1
-        elif gt_label == 0 and pred == 0: tn += 1
-        elif gt_label == 0 and pred == 1: fp += 1
-        else:                             fn += 1
+        for t in tensors:
+            t0 = time.perf_counter()
+            interp.set_tensor(in_idx, t)
+            interp.invoke()
+            pred = int(np.argmax(interp.get_tensor(out_idx)[0]))
+            elapsed_all.append((time.perf_counter() - t0) * 1000)
+
+            if   gt_label == 1 and pred == 1: tp += 1
+            elif gt_label == 0 and pred == 0: tn += 1
+            elif gt_label == 0 and pred == 1: fp += 1
+            else:                             fn += 1
 
     m = compute_metrics(tp, tn, fp, fn)
     if not m:
@@ -379,9 +387,9 @@ def run_diag_only_eval(rows, mel_cfg, diag_path, label):
     arr = np.array(elapsed_all) if elapsed_all else np.array([0])
     print(f"    Accuracy={m['acc']*100:.1f}%  M-Score={m['mscore']*100:.1f}%  "
           f"Se={m['se']*100:.1f}%  Sp={m['sp']*100:.1f}%  "
-          f"(evaluated={m['evaluated']}, skipped={skipped})")
-    print(f"    推理耗时 mean={arr.mean():.0f}ms  "
-          f"min={arr.min():.0f}ms  max={arr.max():.0f}ms")
+          f"(evaluated={m['evaluated']} 切片, skipped={skipped} 文件)")
+    print(f"    推理耗时 mean={arr.mean():.2f}ms  "
+          f"min={arr.min():.2f}ms  max={arr.max():.2f}ms")
     return m
 
 
