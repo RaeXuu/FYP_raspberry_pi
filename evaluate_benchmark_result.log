@@ -5,6 +5,12 @@
   .venv/bin/python evaluate.py --mode both
 
 
+
+
+
+
+
+
 **rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-a/a0002.wav
 
 使用 WAV 文件：data/raw/DataSet2/training-a/a0002.wav
@@ -537,6 +543,17 @@ FP32 vs INT8 对比（Table 6.1）
   CPU temperature        44.8 °C
 
 ============================================================
+
+
+
+
+
+
+
+
+s
+
+
 
 
 **rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python evaluate.py --mode both
