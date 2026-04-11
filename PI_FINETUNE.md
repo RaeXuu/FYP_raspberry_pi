@@ -3,7 +3,7 @@
 > 测试日期：2026-04-10  
 > 设备：Raspberry Pi 4B（4GB RAM，64GB SD）  
 > 运行环境：Python 3.13，ai_edge_litert，XNNPACK delegate  
-> 预处理流水线：load_wav → bandpass(25–400Hz) → segment(2s) → peak-norm → Log-Mel(32×64)
+> 预处理流水线：load_wav → bandpass(25–400Hz) → segment(2s) → peak-norm → Log-Mel(64×64)
 
 ---
 
