@@ -11,9 +11,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **不要安装不必要的依赖**（尤其是 matplotlib、scipy 等大型库）
 - 优先使用 Python 标准库或已有依赖（bleak、numpy、ai_edge_litert、yaml）
 - `src/receive.py` 目前使用了 `scipy`，属于遗留代码，不应在新代码中效仿
-## 设备
-- **开发 & 部署设备**：Raspberry Pi 4B（4GB 内存，64GB SD 卡）
-- 无内存或存储方面的特殊约束，可按需使用标准库和常见依赖
 
 ## 运行命令
 
@@ -36,12 +33,16 @@ python ble_debug.py
 ### 数据流（在线模式 `main_pi.py`）
 ```
 ESP32 BLE → notification_handler() → bytearray buffer
-→ collect_segment()（等待 8000 字节 = 2s）
-→ np.int16 转 float32 / 32768
-→ preprocess_array_for_pi()（带通滤波 → Log-Mel）
-→ TFLite SQA 模型（质量评估，threshold=0.5）
+→ 积累 80000 字节（20s = 40000 samples × 2 bytes）→ chunk_queue
+→ inference_worker() 消费队列
+→ 带通滤波整块一次
+→ 滑窗切片（2s 窗口，1s hop）→ per-window 峰值归一化
+→ logmel_fixed_size()（Log-Mel，shape=(64,64)）
+→ TFLite SQA 模型（质量评估，SQA_THRESHOLD=0.6）
 → TFLite 诊断模型（Normal/Abnormal）
-→ SQA 加权平均 → 最终诊断
+→ SQA 加权平均 → 块级 label
+→ 所有块保存至 debug_records/（normal_/abnormal_/noise_ 前缀）
+→ append_summary() 写 records/summary.jsonl
 ```
 
 ### 预处理流水线（`src/preprocess/`）
@@ -50,14 +51,14 @@ ESP32 BLE → notification_handler() → bytearray buffer
 | `load_wav.py` | 加载 WAV，重采样到目标采样率 |
 | `filters.py` | 带通滤波（25–400 Hz，Butterworth） |
 | `segment.py` | 切片（2s，overlap=0.5s） |
-| `mel.py` | Log-Mel 频谱，固定输出 (32, 64) |
+| `mel.py` | Log-Mel 频谱，固定输出 (64, 64) |
 | `preprocess_pipeline.py` | 组合以上步骤，提供两个入口：`preprocess_wav_for_pi()`（文件输入）和 `preprocess_array_for_pi()`（内存数组输入） |
 
-**TFLite 输入张量格式**：`(1, 1, 32, 64)`，即 `[Batch, Channel, Height, Width]`，dtype=float32。
+**TFLite 输入张量格式**：`(1, 1, 64, 64)`，即 `[Batch, Channel, Height, Width]`，dtype=float32。
 
 ### 关键参数（`config.yaml`）
 - 采样率：2000 Hz，片段时长：2.0s，带通：25–400 Hz
-- Mel：n_fft=256, hop=96, n_mels=32, fmin=20, fmax=400
+- Mel：n_fft=256, win_length=256, hop_length=128, n_mels=64, fmin=25, fmax=400, target_frames=64
 
 ### 模型文件
 - `heart_quality_quant.tflite`：SQA 质量评估（index 0=Poor, 1=Good）
@@ -81,4 +82,4 @@ ESP32 BLE → notification_handler() → bytearray buffer
 - 连接后需调用 `client._backend._acquire_mtu()` 以协商最大 MTU
 
 ## 采集策略
-定量采集 3 个 2s 片段（NUM_COLLECTIONS=3，间隔 COLLECTION_INTERVAL=30s），SQA 过滤低质量片段，对通过的片段做 SQA 加权平均得出最终诊断。结果为 Abnormal 时保存原始音频至 `abnormal_records/`。
+连续流式采集，每 **20s** 为一块（`CHUNK_DURATION=20`）。每块内做滑动窗口推理（2s 窗口，1s hop，共约 19 个窗口）。SQA 过滤低质量窗口（`SQA_THRESHOLD=0.6`），对通过的窗口做 SQA 加权平均得出块级诊断。所有块（Normal/Abnormal/低质量）均以对应前缀保存至 `debug_records/`；每块结果写入 `records/summary.jsonl`。短按按键停止当前会话，再次短按启动新会话。

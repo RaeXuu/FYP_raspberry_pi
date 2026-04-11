@@ -23,24 +23,22 @@ def preprocess_wav_for_pi(wav_path, config):
     # 1. 加载音频
     y, _ = load_wav(wav_path, target_sr=sr)
     
-    # 2. 带通滤波 (25Hz - 400Hz)
-    # 这是去除心音中高频环境噪音的关键步骤
-    y_filtered = apply_bandpass(y, fs=sr, lowcut=25, highcut=400)
-    
+    # 2. 带通滤波
+    bp = config["data"]["bandpass"]
+    y_filtered = apply_bandpass(y, fs=sr, lowcut=bp["low"], highcut=bp["high"])
+
     # 3. 切片处理
-    # 将接收到的音频切成若干个 2 秒的片段
     segments = segment_audio(y_filtered, sr=sr)
-    
+
     processed_segments = []
-    
+
     for seg in segments:
         # 4. 转换为 Log-Mel 频谱
-        # target_shape 必须与训练时完全一致 (32, 64)
         mel = logmel_fixed_size(
             y=seg,
             sr=sr,
             mel_cfg=mel_cfg,
-            target_shape=(mel_cfg["n_mels"], 64), 
+            target_shape=(mel_cfg["n_mels"], mel_cfg["target_frames"]),
         )
         
         # 5. 调整维度适配 TFLite 输入
@@ -66,7 +64,8 @@ def preprocess_array_for_pi(audio_array, config):
         audio_array = audio_array / max_val
 
     # 带通滤波
-    y_filtered = apply_bandpass(audio_array, fs=sr, lowcut=25, highcut=400)
+    bp = config["data"]["bandpass"]
+    y_filtered = apply_bandpass(audio_array, fs=sr, lowcut=bp["low"], highcut=bp["high"])
 
     # 切片（不足一片时补零）
     segments = segment_audio(y_filtered, sr=sr)
@@ -77,7 +76,7 @@ def preprocess_array_for_pi(audio_array, config):
             y=seg,
             sr=sr,
             mel_cfg=mel_cfg,
-            target_shape=(mel_cfg["n_mels"], 64),
+            target_shape=(mel_cfg["n_mels"], mel_cfg["target_frames"]),
         )
         processed_segments.append(mel[np.newaxis, np.newaxis, ...].astype(np.float32))
 

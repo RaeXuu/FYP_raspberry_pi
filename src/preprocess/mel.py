@@ -55,41 +55,33 @@ def logmel_fixed_size(
 
 
 if __name__ == "__main__":
+    import yaml
     import pandas as pd
+    from pathlib import Path
     from src.preprocess.load_wav import load_wav
     from src.preprocess.filters import apply_bandpass
     from src.preprocess.segment import segment_audio
 
-    # 1. 定义 mel 专用配置字典 (重点修复这里！)
-    # 这里的参数直接决定了生成的频谱图长什么样
-    mel_settings = {
-        "n_fft": 256,         # 窗长
-        "hop_length": 64,     # 帧移 (决定了频谱图的宽度)
-        "n_mels": 32,         # Mel 滤波器数量 (决定了频谱图的高度)
-        "fmin": 20,           # 最低频率 (心音低频多，20Hz 比较合适)
-        "fmax": 400           # 最高频率 (配合你之前的带通滤波)
-    }
+    CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
+    with open(CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+
+    mel_cfg = cfg["mel"]
+    sr = cfg["data"]["sample_rate"]
+    bp = cfg["data"]["bandpass"]
 
     df = pd.read_csv("data/metadata_physionet.csv")
     path = df.iloc[0]["filepath"]
-
     print("测试样本:", path)
 
-    # Step1: load wav
-    y, sr = load_wav(path, target_sr=2000)
-
-    # Step2: bandpass
-    y = apply_bandpass(y, fs=sr, lowcut=25, highcut=400)
-
-    # Step3: segment
+    y, _ = load_wav(path, target_sr=sr)
+    y = apply_bandpass(y, fs=sr, lowcut=bp["low"], highcut=bp["high"])
     segments = segment_audio(y, sr=sr)
     seg = segments[0]
 
     print("单段长度:", len(seg))
 
-    # Step4: log-mel (这里传入刚才定义的字典)
-    # 注意：target_shape=(32, 64) 里的 32 最好和上面的 n_mels 一致
-    mel = logmel_fixed_size(seg, sr=sr, mel_cfg=mel_settings, target_shape=(32, 64))
-
+    mel = logmel_fixed_size(seg, sr=sr, mel_cfg=mel_cfg,
+                            target_shape=(mel_cfg["n_mels"], mel_cfg["target_frames"]))
     print("Log-Mel shape:", mel.shape)
     print("Mel 测试完成 ✅")
