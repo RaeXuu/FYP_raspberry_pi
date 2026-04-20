@@ -45,12 +45,18 @@
 | OLED 2 SDA | GPIO23 | Pin 16 | 软件 I2C（i2c-4）SDA |
 | OLED 2 VCC | — | Pin 17 (3.3V) | — |
 | OLED 2 GND | — | Pin 20 (GND) | — |
-| LED | GPIO17 | Pin 11 | 串联 330Ω 限流电阻 |
-| LED GND | — | Pin 14 (GND) | — |
-| 按键 | GPIO27 | Pin 13 | 内部上拉，另一端接 GND |
-| 按键 GND | — | Pin 9 (GND) | — |
-| 蜂鸣器 | GPIO22 | Pin 15 | 有源→普通输出，无源→PWM |
-| 蜂鸣器 GND | — | Pin 20 (GND) | — |
+| RGB LED R | GPIO17 | Pin 11 | 软件 PWM，亮度 30% |
+| RGB LED G | GPIO22 | Pin 15 | 软件 PWM，亮度 30% |
+| RGB LED B | GPIO10 | Pin 19 | 软件 PWM，亮度 30% |
+| RGB LED GND | — | Pin 39 (GND) | — |
+| 按键 1 | GPIO15 | Pin 10 | 内部上拉，另一端接 GND；短按开始/停止采集，长按 3s 关机 |
+| 按键 2 | GPIO18 | Pin 12 | 内部上拉，另一端接 GND；短按切换 OLED 2 页面 |
+| 按键 GND | — | Pin 14 (GND) | 两个按键共用 |
+| 蜂鸣器 I/O | GPIO25 | Pin 22 | 低电平触发（MH-FMD 有源模块） |
+| 蜂鸣器 VCC | — | Pin 1 (3.3V) | 与 OLED 并联 |
+| 蜂鸣器 GND | — | Pin 14 (GND) | — |
+
+> **注**：GPIO14（Pin 8）/ GPIO15（Pin 10）为 UART 引脚。GPIO14（TX）会被 UART 主动拉高，不可用作按键输入；GPIO15（RX）为输入方向，不主动驱动，可安全用作按键。
 
 ---
 
@@ -181,9 +187,13 @@
 ### 3.1 物理按键（已实现）
 
 - **实现文件**：`src/ui/button.py`
-- **硬件**：GPIO27，内部上拉，另一端接 GND
+- **类**：`Button(pin=15)`，pin 参数可配置，默认 GPIO15
 - **消抖**：软件消抖 20ms
 - **长按判定**：≥ 3.0s
+- 回调支持 async 和普通函数
+- `btn.start()` 以 asyncio task 在事件循环中运行，`btn.stop()` 取消 task 并清理 GPIO
+
+**按键 1（GPIO15，Pin 10）**
 
 | 操作 | 动作 |
 |---|---|
@@ -191,8 +201,11 @@
 | 短按（采集中） | 停止当前采集会话 |
 | 长按 3s | OLED 显示"关机中..." → `sudo shutdown -h now` |
 
-- 回调支持 async 和普通函数
-- `btn.start()` 以 asyncio task 在事件循环中运行，`btn.stop()` 取消 task 并清理 GPIO
+**按键 2（GPIO18，Pin 12）**
+
+| 操作 | 动作 |
+|---|---|
+| 短按 | 切换 OLED 2 显示页面（页一 ↔ 页二） |
 
 ### 3.2 OLED 显示屏（已实现）
 
@@ -250,20 +263,55 @@ Timeout: 12s                    y=36（每秒倒数）
 - **供电**：Pin 17（3.3V）/ Pin 20（GND）
 - **dtoverlay**：`dtoverlay=i2c-gpio,bus=4,i2c_gpio_sda=23,i2c_gpio_scl=24`（已写入 `/boot/firmware/config.txt`）
 - **初始化**：`ssd1306(width=128, height=32, rotate=0)`（用 `sh1106` 或 `height=64` 显示异常）
-- **刷新频率**：每 2 秒，`sysinfo_updater()` 后台 asyncio task 全程运行
+- **刷新频率**：每 1 秒（`sysinfo_updater()`），系统信息每 2 次才更新一次，WiFi 图标每次都刷（实现 1Hz 闪烁）
+- **页面切换**：全局变量 `_oled2_page`（0=页一，1=页二），由按键 2 短按触发 `1 - _oled2_page` 切换
 
 | 方法 | 显示内容 |
 |---|---|
-| `show(cpu_pct, mem_used_mb, mem_total_mb, temp_c)` | CPU%（行1）/ 内存 used/total MB（行2）/ CPU温度（行3） |
+| `show(cpu_pct, mem_used_mb, mem_total_mb, temp_c, wifi_on=True)` | 页一：CPU%（行1）/ 内存（行2）/ 温度（行3）+ 右上角 WiFi 图标 |
+| `show_power(bat_pct, power_w, voltage_v, wifi_on=True)` | 页二：电池%（行1）/ 功率 W（行2）/ 电压 V（行3）+ WiFi 图标（占位，待接电源模块） |
 
-### 3.3 LED 状态指示（未实现）
-- 规划使用单颗 RGB LED（共阴），GPIO PWM 驱动
-- 实现文件：`src/ui/led.py`（待实现）
+**WiFi 图标（12×8 像素，右上角 x=115, y=0）**
+- WiFi 已连接：图标常亮
+- WiFi 断开：图标 1Hz 闪烁（`sysinfo_updater` 每秒切换 `wifi_blink` 状态）
+- 检测方式：`psutil.net_if_addrs().get('wlan0')` 是否含 IPv4 地址（family=2）
 
-### 3.4 蜂鸣器（未实现）
-- 规划使用无源蜂鸣器，GPIO PWM 控制频率
-- 仅在结果 Abnormal 或系统错误时鸣响
-- 实现文件：`src/ui/buzzer.py`（待实现）
+### 3.3 RGB LED 状态指示（已实现）
+
+- **实现文件**：`src/ui/led.py`
+- **硬件**：RGB LED 模块，R=GPIO17 / G=GPIO22 / B=GPIO10，RPi.GPIO 软件 PWM（100Hz），亮度系数 0.3
+- **类**：`RGBLed`，asyncio task 驱动闪烁/呼吸效果
+
+| 状态 | 颜色 | 效果 |
+|---|---|---|
+| 待机 | 蓝 | 常亮 |
+| BLE 连接中 | 蓝 | 闪烁（1Hz） |
+| 采集推理中 | 蓝 | 呼吸灯（2s 周期） |
+| 结果 Normal | 绿 | 常亮 |
+| 结果 Abnormal | 红 | 常亮 |
+| 连接失败/错误 | 红 | 快闪（4Hz） |
+| 关机 | — | 全灭 |
+
+- noise 块（信号差）不更新 LED，保持上一次结果颜色
+- `led.cleanup()` 在主程序退出时调用，确保 GPIO 清理
+
+### 3.4 蜂鸣器（已实现）
+
+- **实现文件**：`src/ui/buzzer.py`
+- **硬件**：MH-FMD 有源蜂鸣器模块，低电平触发，GPIO25，VCC 接 3.3V
+- **类**：`Buzzer`，asyncio task 驱动，不阻塞主循环
+
+| 事件 | 效果 |
+|---|---|
+| 结果 Normal | 短响一声（100ms） |
+| 结果 Abnormal | 连响三声（100ms on / 200ms off） |
+| 其他状态 | 不响 |
+
+### 3.5 OLED 2 电源页数据接入（待实现）
+
+- `show_power()` 界面框架已完成，参数均有占位符显示 `--`
+- 待接入电源模块后，通过 I2C 读取电池电量、功率、电压，传入 `show_power(bat_pct, power_w, voltage_v)`
+- 前提：确认 UPS/电源模块型号 → `i2cdetect` 确认 I2C 地址 → 实现读取驱动
 
 ---
 
@@ -386,6 +434,23 @@ sudo systemctl restart heartbeat
 
 ---
 
+## 模块九：性能监控
+
+### 9.1 CPU 亲和性（已实现）
+
+- `run_inference()` 入口处调用 `os.sched_setaffinity(0, {3})`，将推理线程固定到 core 3
+- BLE 接收、OLED 刷新、按键监听等任务在 core 0-2 上运行，互不干扰
+- 减少推理线程的调度抖动，提高延迟稳定性
+
+### 9.2 推理延迟 Benchmark（已实现）
+
+- 每块推理前后用 `time.time()` 计时，记录整块滑窗推理总耗时
+- 结果打印到终端：`[块 001] 推理耗时 342 ms（7/19 窗口有效）`
+- 同步写入 `debug_records/inference_log.csv` 新增列 `infer_ms`
+- 意义：验证推理延迟满足 BLE Supervision Timeout（1000 ms）硬性约束，单块推理实测远低于此上限
+
+---
+
 ## 当前实现状态
 
 | 模块 | 状态 | 备注 |
@@ -395,12 +460,15 @@ sudo systemctl restart heartbeat
 | 预处理流水线 | 已实现 | `src/preprocess/` |
 | TFLite 双模型推理 | 已实现 | SQA + 诊断 |
 | CSV 推理日志 | 已实现 | `debug_records/` |
-| 物理按键 | 已实现 | `src/ui/button.py` |
-| LED 状态指示 | 未实现 | `src/ui/led.py` |
-| 蜂鸣器 | 未实现 | `src/ui/buzzer.py` |
+| 物理按键 1（开始/停止/关机） | 已实现 | GPIO15，Pin 10 |
+| 物理按键 2（OLED 2 页面切换） | 已实现 | GPIO18，Pin 12 |
+| RGB LED 状态指示 | 已实现 | `src/ui/led.py` |
+| 蜂鸣器 | 已实现 | `src/ui/buzzer.py` |
 | OLED 1 显示（诊断主屏） | 已实现 | `src/display/oled.py` → `OLEDDisplay` |
-| OLED 2 显示（系统状态副屏） | 已实现 | `src/display/oled.py` → `SysInfoDisplay` |
+| OLED 2 页一（CPU/内存/温度 + WiFi 图标） | 已实现 | `SysInfoDisplay.show()` |
+| OLED 2 页二（电源占位界面） | 已实现（数据待接入） | `SysInfoDisplay.show_power()` |
 | 结果摘要 JSONL | 已实现 | `src/storage/summary.py` |
+| 推理延迟 benchmark | 已实现 | `main_pi.py`，CSV `infer_ms` 列 |
 | 数据清理 | 未实现 | `src/storage/cleaner.py` |
 | 网络上报 | 未实现（可选） | `src/network/reporter.py` |
 | systemd 服务 | 已实现 | `deploy/heartbeat.service`，`deploy/install.sh` |

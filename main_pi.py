@@ -23,14 +23,19 @@ from src.storage.summary import append_summary
 import psutil
 from src.display.oled import OLEDDisplay, SysInfoDisplay
 from src.ui.button import Button
+from src.ui.led import RGBLed
+from src.ui.buzzer import Buzzer
 
 oled  = OLEDDisplay()
 oled2 = SysInfoDisplay()
+led    = RGBLed()
+buzzer = Buzzer()
 
 # ==========================================
 # 配置
 # ==========================================
-ESP32_MAC           = "80:F1:B2:ED:B4:12"
+# ESP32_MAC           = "80:F1:B2:ED:B4:12"
+ESP32_MAC           = "AC:A7:04:85:0D:42"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 BLE_CONNECT_TIMEOUT = 15
 
@@ -58,6 +63,7 @@ _chunk_queue = None   # asyncio.Queue，在 run_session() 中初始化
 _running     = True
 _chunk_count = 0
 _exit        = False
+_oled2_page  = 0      # 0=系统信息, 1=电源信息
 
 
 # ==========================================
@@ -107,6 +113,7 @@ def notification_handler(sender, data):
 def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
                   q_in, q_out, d_in, d_out, on_window=None, chunk_idx=0,
                   last_label=None, last_chunk_idx=None, last_prob=None):
+    os.sched_setaffinity(0, {3})  # 推理线程固定到 core 3
     """
     对一块原始 int16 字节做滑动窗口推理。
     返回: (label, avg_prob, valid_count, total_windows, window_data)
@@ -195,16 +202,36 @@ async def heartbeat_writer():
 
 
 async def sysinfo_updater():
+    wifi_blink = True
+    tick = 0
+    cpu, mem_used, mem_total, temp = 0.0, 0.0, 0.0, 0.0
     while not _exit:
-        cpu  = psutil.cpu_percent(interval=None)
-        mem  = psutil.virtual_memory()
-        try:
-            temps = psutil.sensors_temperatures()
-            temp  = temps["cpu_thermal"][0].current
-        except Exception:
-            temp  = 0.0
-        oled2.show(cpu, mem.used / 1024**2, mem.total / 1024**2, temp)
-        await asyncio.sleep(2)
+        # 每 2 tick（2s）更新系统信息，每 1 tick（1s）刷新 WiFi 闪烁
+        if tick % 2 == 0:
+            cpu  = psutil.cpu_percent(interval=None)
+            mem  = psutil.virtual_memory()
+            try:
+                temps = psutil.sensors_temperatures()
+                temp  = temps["cpu_thermal"][0].current
+            except Exception:
+                temp  = 0.0
+            mem_used  = mem.used  / 1024**2
+            mem_total = mem.total / 1024**2
+        tick += 1
+
+        wifi_addrs     = psutil.net_if_addrs().get('wlan0', [])
+        wifi_connected = any(a.family == 2 for a in wifi_addrs)
+        if wifi_connected:
+            wifi_on = True
+        else:
+            wifi_blink = not wifi_blink
+            wifi_on    = wifi_blink
+
+        if _oled2_page == 0:
+            oled2.show(cpu, mem_used, mem_total, temp, wifi_on=wifi_on)
+        else:
+            oled2.show_power(wifi_on=wifi_on)
+        await asyncio.sleep(1)
 
 
 # ==========================================
@@ -237,20 +264,23 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
             if write_header:
                 writer.writerow(["time", "chunk_idx", "win_idx",
                                  "sqa_score", "sqa_pass", "prob_normal",
-                                 "chunk_label", "chunk_prob_normal"])
+                                 "chunk_label", "chunk_prob_normal", "infer_ms"])
 
         print(f"\n[块 {chunk_idx:03d}] 推理中（{CHUNK_DURATION}s / {CHUNK_SAMPLES//HOP_SAMPLES - 1} 窗口）...")
+        led.running()
         oled.show_running(chunk_idx=chunk_idx,
                           last_label=tally.get("_last_label"),
                           last_chunk_idx=tally.get("_last_chunk_idx"),
                           last_prob=tally.get("_last_prob"))
 
+        infer_start = time.time()
         label, avg_prob, valid_count, total_windows, window_data = await asyncio.to_thread(
             run_inference, raw_bytes, mel_cfg,
             q_interp, d_interp, q_in, q_out, d_in, d_out,
             oled.show_running, chunk_idx,
             tally.get("_last_label"), tally.get("_last_chunk_idx"), tally.get("_last_prob")
         )
+        infer_ms = (time.time() - infer_start) * 1000
 
         chunk_time = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -259,19 +289,26 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
             tally["_last_chunk_idx"] = chunk_idx
             tally["_last_prob"]      = avg_prob
 
+        print(f"[块 {chunk_idx:03d}]  推理耗时 {infer_ms:.0f} ms（{valid_count}/{total_windows} 窗口有效）")
+
         if label is None:
             tally["noise"] += 1
             filename = save_wav(raw_bytes, chunk_idx, "noise")
             print(f"[块 {chunk_idx:03d}]  信号差（0/{total_windows} 窗口通过 SQA）")
             print(f"[块 {chunk_idx:03d}]  已保存: {filename}")
+            # noise 块保持上一次 LED 状态，不更新
         elif label == "Normal":
             tally["Normal"] += 1
+            led.normal()
+            buzzer.normal()
             filename = save_wav(raw_bytes, chunk_idx, "normal")
             print(f"[块 {chunk_idx:03d}]  Normal     prob_normal={avg_prob:.2%}"
                   f"  ({valid_count}/{total_windows} 窗口有效）")
             print(f"[块 {chunk_idx:03d}]  已保存: {filename}")
         else:
             tally["Abnormal"] += 1
+            led.abnormal()
+            buzzer.abnormal()
             filename = save_wav(raw_bytes, chunk_idx, "abnormal")
             print(f"[块 {chunk_idx:03d}]  Abnormal   prob_normal={avg_prob:.2%}"
                   f"  ({valid_count}/{total_windows} 窗口有效）")
@@ -284,7 +321,8 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
                 f"{sqa_score:.4f}", sqa_pass,
                 f"{prob_normal:.4f}" if prob_normal is not None else "",
                 label if label is not None else "noise",
-                f"{avg_prob:.4f}" if avg_prob is not None else ""
+                f"{avg_prob:.4f}" if avg_prob is not None else "",
+                f"{infer_ms:.0f}"
             ])
         log_file.flush()
         append_summary(label, avg_prob, valid_count, total_windows)
@@ -317,6 +355,7 @@ async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
     _chunk_count = 0
 
     print(f"正在连接 ESP32: {ESP32_MAC}...")
+    led.connecting()
     oled.start_connecting_countdown(timeout=BLE_CONNECT_TIMEOUT)
 
     client = BleakClient(ESP32_MAC)
@@ -325,6 +364,7 @@ async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
     except Exception as e:
         oled.stop_connecting_countdown()
         print(f"连接失败: {e}")
+        led.error()
         oled.show_error("Connect Failed")
         await asyncio.sleep(3)
         return
@@ -392,14 +432,23 @@ async def main():
         global _running, _exit
         _running = False
         _exit = True
+        led.off()
         oled.show_text("关机中...")
         await asyncio.sleep(1)
         os.system("sudo shutdown -h now")
 
-    btn = Button()
+    async def on_page_toggle():
+        global _oled2_page
+        _oled2_page = 1 - _oled2_page
+
+    btn  = Button(pin=15)
     btn.on_short_press(on_short_press)
     btn.on_long_press(on_long_press)
     btn.start()
+
+    btn2 = Button(pin=18)
+    btn2.on_short_press(on_page_toggle)
+    btn2.start()
 
     loop = asyncio.get_event_loop()
     def handle_signal():
@@ -414,6 +463,7 @@ async def main():
     hb   = asyncio.create_task(heartbeat_writer())
     si   = asyncio.create_task(sysinfo_updater())
 
+    led.standby()
     oled.start_standby_blink()
     print("待机中，短按按键开始采集，长按 3s 关机")
 
@@ -425,12 +475,16 @@ async def main():
         oled.stop_standby_blink()
         await run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out)
         if not _exit:
+            led.standby()
             oled.start_standby_blink()
             print("采集结束，短按按键重新开始")
 
     hb.cancel()
     si.cancel()
     btn.stop()
+    btn2.stop()
+    led.cleanup()
+    buzzer.cleanup()
 
 
 if __name__ == "__main__":

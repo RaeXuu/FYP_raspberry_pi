@@ -10,7 +10,8 @@ import asyncio
 import time
 from bleak import BleakClient, BleakScanner
 
-ESP32_MAC = "80:F1:B2:ED:B4:12"
+# ESP32_MAC = "80:F1:B2:ED:B4:12"
+ESP32_MAC = "AC:A7:04:85:0D:42"
 TARGET_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 # ==========================================

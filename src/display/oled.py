@@ -159,11 +159,46 @@ class SysInfoDisplay:
         self.device = ssd1306(serial, width=128, height=32, rotate=0)
         self._lock = threading.Lock()
 
-    def show(self, cpu_pct, mem_used_mb, mem_total_mb, temp_c):
+    def show(self, cpu_pct, mem_used_mb, mem_total_mb, temp_c, wifi_on=True):
         def fn(draw):
-            draw.text((0, 0),  f"CPU: {cpu_pct:5.1f}%",              fill="white")
+            draw.text((0, 0),  f"CPU: {cpu_pct:5.1f}%",                       fill="white")
             draw.text((0, 9),  f"Mem: {mem_used_mb:.0f}/{mem_total_mb:.0f}MB", fill="white")
-            draw.text((0, 18), f"Tmp: {temp_c:.0f}C",                fill="white")
+            draw.text((0, 18), f"Tmp: {temp_c:.0f}C",                          fill="white")
+            if wifi_on:
+                SysInfoDisplay._draw_wifi(draw, 115, 0)
+        with self._lock:
+            with canvas(self.device) as draw:
+                fn(draw)
+
+    @staticmethod
+    def _draw_wifi(draw, x, y):
+        """12×8 像素 WiFi 图标。"""
+        draw.point([
+            # outer arc
+            (x+2,y+0),(x+3,y+0),(x+4,y+0),(x+5,y+0),(x+6,y+0),(x+7,y+0),(x+8,y+0),(x+9,y+0),
+            (x+1,y+1),(x+10,y+1),
+            (x+0,y+2),(x+11,y+2),
+            # middle arc
+            (x+3,y+3),(x+4,y+3),(x+5,y+3),(x+6,y+3),(x+7,y+3),(x+8,y+3),
+            (x+2,y+4),(x+9,y+4),
+            # inner arc
+            (x+4,y+5),(x+5,y+5),(x+6,y+5),(x+7,y+5),
+            # dot (2×2)
+            (x+5,y+6),(x+6,y+6),
+            (x+5,y+7),(x+6,y+7),
+        ], fill="white")
+
+    def show_power(self, bat_pct=None, power_w=None, voltage_v=None, wifi_on=True):
+        bat_str = f"Bat: {bat_pct:5.1f}%" if bat_pct  is not None else "Bat:    --%"
+        pwr_str = f"Pwr: {power_w:5.2f}W" if power_w  is not None else "Pwr:   -- W"
+        vol_str = f"Vol: {voltage_v:4.2f}V" if voltage_v is not None else "Vol:   -- V"
+
+        def fn(draw):
+            draw.text((0, 0),  bat_str, fill="white")
+            draw.text((0, 11), pwr_str, fill="white")
+            draw.text((0, 22), vol_str, fill="white")
+            if wifi_on:
+                SysInfoDisplay._draw_wifi(draw, 115, 0)
         with self._lock:
             with canvas(self.device) as draw:
                 fn(draw)
