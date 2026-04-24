@@ -2,10 +2,7 @@ import json
 import os
 from datetime import datetime
 
-SUMMARY_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..", "..", "records", "summary.jsonl"
-)
+SUMMARY_PATH = "/data/records/summary.jsonl"
 
 
 def append_summary(label, prob_normal, valid_segs, total_segs):

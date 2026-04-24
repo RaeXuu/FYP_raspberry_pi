@@ -25,9 +25,11 @@ from src.display.oled import OLEDDisplay, SysInfoDisplay
 from src.ui.button import Button
 from src.ui.led import RGBLed
 from src.ui.buzzer import Buzzer
+from src.power.serial_reader import PowerReader
 
-oled  = OLEDDisplay()
-oled2 = SysInfoDisplay()
+oled   = OLEDDisplay()
+oled2  = SysInfoDisplay()
+power  = PowerReader()
 led    = RGBLed()
 buzzer = Buzzer()
 
@@ -52,8 +54,8 @@ CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_DURATION         # 40000 samples
 CHUNK_BYTES   = CHUNK_SAMPLES * 2                    # 80000 bytes（int16）
 # 每块窗口数：(40000 - 4000) / 2000 + 1 
 
-RECORDS_DIR = os.path.join(PROJECT_ROOT, "debug_records")
-LOG_PATH    = os.path.join(RECORDS_DIR, "inference_log.csv")
+RECORDS_DIR = "/data/debug_records"
+LOG_PATH    = "/data/debug_records/inference_log.csv"
 
 # ==========================================
 # 全局接收状态
@@ -64,6 +66,10 @@ _running     = True
 _chunk_count = 0
 _exit        = False
 _oled2_page  = 0      # 0=系统信息, 1=电源信息
+
+# 电池保护阈值（Li-ion，BATTERY 电压）
+BAT_WARN_V     = 3.4  # 低电量警告
+BAT_SHUTDOWN_V = 3.2  # 软件安全关机（硬件断电默认 3.0V）
 
 
 # ==========================================
@@ -202,9 +208,14 @@ async def heartbeat_writer():
 
 
 async def sysinfo_updater():
+    global _oled2_page, _running, _exit
     wifi_blink = True
     tick = 0
     cpu, mem_used, mem_total, temp = 0.0, 0.0, 0.0, 0.0
+    bat_shutdown_triggered = False
+    bat_warn = False
+    lightning_on = False
+
     while not _exit:
         # 每 2 tick（2s）更新系统信息，每 1 tick（1s）刷新 WiFi 闪烁
         if tick % 2 == 0:
@@ -227,10 +238,38 @@ async def sysinfo_updater():
             wifi_blink = not wifi_blink
             wifi_on    = wifi_blink
 
+        # ---- 电池保护 ----
+        bat_v    = power.battery_v()
+        charging = (power.dcinput_v() or 0) > 4.0  # DC 接入视为充电中
+        if bat_v is not None and not charging and not bat_shutdown_triggered:
+            if bat_v <= BAT_SHUTDOWN_V:
+                bat_shutdown_triggered = True
+                print(f"[Battery] 电压 {bat_v:.2f}V ≤ {BAT_SHUTDOWN_V}V，执行安全关机")
+                _running = False
+                _exit    = True
+                led.off()
+                oled.show_text("Low Battery!\n关机中...")
+                await asyncio.sleep(3)
+                os.system("sudo shutdown -h now")
+                return
+            elif bat_v <= BAT_WARN_V:
+                bat_warn = True
+                _oled2_page = 1      # 强制切到电源页
+                lightning_on = not lightning_on  # 每 tick 翻转，产生闪烁
+            else:
+                bat_warn = False
+                lightning_on = False
+
         if _oled2_page == 0:
             oled2.show(cpu, mem_used, mem_total, temp, wifi_on=wifi_on)
         else:
-            oled2.show_power(wifi_on=wifi_on)
+            oled2.show_power(
+                bat_pct=power.bat_pct(),
+                voltage_v=power.battery_v(),
+                uptime_str=power.uptime(),
+                wifi_on=wifi_on,
+                low_bat=lightning_on,
+            )
         await asyncio.sleep(1)
 
 
@@ -441,7 +480,7 @@ async def main():
         global _oled2_page
         _oled2_page = 1 - _oled2_page
 
-    btn  = Button(pin=15)
+    btn  = Button(pin=4)
     btn.on_short_press(on_short_press)
     btn.on_long_press(on_long_press)
     btn.start()
@@ -460,6 +499,7 @@ async def main():
     loop.add_signal_handler(signal.SIGINT, handle_signal)
     loop.add_signal_handler(signal.SIGTERM, handle_signal)
 
+    power.start()
     hb   = asyncio.create_task(heartbeat_writer())
     si   = asyncio.create_task(sysinfo_updater())
 
@@ -481,6 +521,7 @@ async def main():
 
     hb.cancel()
     si.cancel()
+    power.stop()
     btn.stop()
     btn2.stop()
     led.cleanup()

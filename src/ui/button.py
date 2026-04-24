@@ -2,7 +2,7 @@ import asyncio
 import time
 import RPi.GPIO as GPIO
 
-BUTTON_PIN    = 15
+BUTTON_PIN    = 4
 DEBOUNCE_MS   = 20
 LONG_PRESS_S  = 3.0
 

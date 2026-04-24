@@ -162,7 +162,7 @@ class SysInfoDisplay:
     def show(self, cpu_pct, mem_used_mb, mem_total_mb, temp_c, wifi_on=True):
         def fn(draw):
             draw.text((0, 0),  f"CPU: {cpu_pct:5.1f}%",                       fill="white")
-            draw.text((0, 9),  f"Mem: {mem_used_mb:.0f}/{mem_total_mb:.0f}MB", fill="white")
+            draw.text((0, 9),  f"Mem: {mem_used_mb/1024:.1f}/{mem_total_mb/1024:.1f}G", fill="white")
             draw.text((0, 18), f"Tmp: {temp_c:.0f}C",                          fill="white")
             if wifi_on:
                 SysInfoDisplay._draw_wifi(draw, 115, 0)
@@ -188,15 +188,32 @@ class SysInfoDisplay:
             (x+5,y+7),(x+6,y+7),
         ], fill="white")
 
-    def show_power(self, bat_pct=None, power_w=None, voltage_v=None, wifi_on=True):
-        bat_str = f"Bat: {bat_pct:5.1f}%" if bat_pct  is not None else "Bat:    --%"
-        pwr_str = f"Pwr: {power_w:5.2f}W" if power_w  is not None else "Pwr:   -- W"
+    @staticmethod
+    def _draw_lightning(draw, x, y):
+        """6×8 像素闪电图标，低电量警告用。"""
+        draw.point([
+            (x+1,y+0),(x+2,y+0),(x+3,y+0),(x+4,y+0),
+            (x+0,y+1),(x+1,y+1),(x+2,y+1),(x+3,y+1),(x+4,y+1),
+            (x+0,y+2),(x+1,y+2),(x+2,y+2),(x+3,y+2),
+            (x+0,y+3),(x+1,y+3),(x+2,y+3),(x+3,y+3),(x+4,y+3),(x+5,y+3),
+            (x+2,y+4),(x+3,y+4),(x+4,y+4),(x+5,y+4),
+            (x+3,y+5),(x+4,y+5),(x+5,y+5),
+            (x+4,y+6),(x+5,y+6),
+            (x+5,y+7),
+        ], fill="white")
+
+    def show_power(self, bat_pct=None, voltage_v=None, uptime_str=None,
+                   wifi_on=True, low_bat=False):
+        bat_str = f"Bat: {bat_pct:5.1f}%" if bat_pct   is not None else "Bat:    --%"
         vol_str = f"Vol: {voltage_v:4.2f}V" if voltage_v is not None else "Vol:   -- V"
+        upt_str = f"Up: {uptime_str}"        if uptime_str is not None else "Up:       --"
 
         def fn(draw):
             draw.text((0, 0),  bat_str, fill="white")
-            draw.text((0, 11), pwr_str, fill="white")
-            draw.text((0, 22), vol_str, fill="white")
+            draw.text((0, 11), vol_str, fill="white")
+            draw.text((0, 22), upt_str, fill="white")
+            if low_bat:
+                SysInfoDisplay._draw_lightning(draw, 100, 0)
             if wifi_on:
                 SysInfoDisplay._draw_wifi(draw, 115, 0)
         with self._lock:
