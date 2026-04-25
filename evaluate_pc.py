@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import yaml
 import ai_edge_litert.interpreter as tflite
-from sklearn.metrics import classification_report, recall_score
+from sklearn.metrics import classification_report, recall_score, confusion_matrix
 from torch.utils.data import Subset
 from pathlib import Path
 
@@ -47,14 +47,31 @@ def evaluate_single_tflite(model_path, subset, target_names):
 
     interpreter = tflite.Interpreter(model_path=model_path)
     interpreter.allocate_tensors()
-    
-    input_idx = interpreter.get_input_details()[0]['index']
-    output_idx = interpreter.get_output_details()[0]['index']
-    
+
+    input_info  = interpreter.get_input_details()[0]
+    output_info = interpreter.get_output_details()[0]
+    input_idx   = input_info['index']
+    output_idx  = output_info['index']
+
+    input_dtype  = input_info['dtype']
+    output_dtype = output_info['dtype']
+    is_int8_in  = input_dtype in (np.int8, np.uint8)
+    is_int8_out = output_dtype in (np.int8, np.uint8)
+
+    model_tag = os.path.basename(model_path)
+    print(f"🚀 正在推理: {model_tag} (样本数: {len(subset)}, "
+          f"输入: {input_dtype.__name__ if hasattr(input_dtype, '__name__') else input_dtype}, "
+          f"输出: {output_dtype.__name__ if hasattr(output_dtype, '__name__') else output_dtype})")
+
+    input_scale, input_zp = (0.0, 0)
+    output_scale, output_zp = (0.0, 0)
+    if is_int8_in:
+        input_scale, input_zp = input_info['quantization']
+    if is_int8_out:
+        output_scale, output_zp = output_info['quantization']
+
     all_preds, all_labels, latencies = [], [], []
 
-    print(f"🚀 正在推理: {os.path.basename(model_path)} (样本数: {len(subset)})")
-    
     for i in range(len(subset)):
         mel, label = subset[i]
         input_data = mel.numpy()
@@ -62,11 +79,24 @@ def evaluate_single_tflite(model_path, subset, target_names):
         if input_data.ndim == 3:
             input_data = np.expand_dims(input_data, axis=0)
 
+        # INT8 输入：手动量化
+        if is_int8_in:
+            input_q = (input_data / input_scale + input_zp)
+            input_q = np.clip(input_q, -128, 127).astype(np.int8)
+        else:
+            input_q = input_data.astype(np.float32)
+
         start_time = time.perf_counter()
-        interpreter.set_tensor(input_idx, input_data)
+        interpreter.set_tensor(input_idx, input_q)
         interpreter.invoke()
-        output_data = interpreter.get_tensor(output_idx)
+        output_raw = interpreter.get_tensor(output_idx)
         latencies.append(time.perf_counter() - start_time)
+
+        # INT8 输出：手动反量化
+        if is_int8_out:
+            output_data = (output_raw.astype(np.float32) - output_zp) * output_scale
+        else:
+            output_data = output_raw
 
         all_preds.append(np.argmax(output_data))
         all_labels.append(label)
@@ -75,12 +105,21 @@ def evaluate_single_tflite(model_path, subset, target_names):
     report = classification_report(all_labels, all_preds, target_names=target_names, output_dict=True, zero_division=0)
     
     # M-Score: 两个类别召回率的算术平均值
-    m_score = (recall_score(all_labels, all_preds, pos_label=0) + 
-               recall_score(all_labels, all_preds, pos_label=1)) / 2
+    se = recall_score(all_labels, all_preds, pos_label=1)
+    sp = recall_score(all_labels, all_preds, pos_label=0)
+    m_score = (se + sp) / 2
+
+    # 混淆矩阵：行=真实标签(0,1)，列=预测标签(0,1)
+    cm = confusion_matrix(all_labels, all_preds)
+    tn, fp, fn, tp = cm.ravel()
 
     return {
         "Accuracy": f"{report['accuracy']:.4f}",
         "M-Score": f"{m_score:.4f}",
+        "Se": f"{se:.4f}",
+        "Sp": f"{sp:.4f}",
+        "TP": int(tp), "FN": int(fn), "FP": int(fp), "TN": int(tn),
+        "n": len(all_labels),
         "Latency": f"{avg_latency:.2f}ms",
         "Size": f"{os.path.getsize(model_path)/(1024*1024):.2f}MB"
     }
@@ -99,8 +138,9 @@ def main():
             "split_csv": os.path.join(PROJECT_ROOT, "data/test_split.csv"),
             "labels": ['Normal', 'Abnormal'],
             "models": {
-                "Diag_FP32": os.path.join(PROJECT_ROOT, "heart_model_fp32.tflite"),
-                "Diag_INT8": os.path.join(PROJECT_ROOT, "heart_model_quant.tflite")
+                "Diag_FP32":      os.path.join(PROJECT_ROOT, "heart_model_fp32.tflite"),
+                "Diag_INT8":      os.path.join(PROJECT_ROOT, "heart_model_quant.tflite"),
+                "Diag_INT8full":  os.path.join(PROJECT_ROOT, "heart_model_int8full.tflite")
             }
         },
         {
@@ -109,8 +149,9 @@ def main():
             "split_csv": os.path.join(PROJECT_ROOT, "data/test_split_sqa.csv"),
             "labels": ['Good', 'Bad'],
             "models": {
-                "Qual_FP32": os.path.join(PROJECT_ROOT, "heart_quality_fp32.tflite"),
-                "Qual_INT8": os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite")
+                "Qual_FP32":      os.path.join(PROJECT_ROOT, "heart_quality_fp32.tflite"),
+                "Qual_INT8":      os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite"),
+                "Qual_INT8full":  os.path.join(PROJECT_ROOT, "heart_quality_int8full.tflite")
             }
         }
     ]
@@ -146,7 +187,7 @@ def main():
         print("\n" + "#"*90)
         print("🏆 FypProj 双阶段系统：FP32 vs INT8 综合性能对比报告")
         print("#"*90)
-        print(df[["Task", "Model", "Accuracy", "M-Score", "Latency", "Size"]].to_string(index=False))
+        print(df[["Task", "Model", "Accuracy", "M-Score", "Se", "Sp", "TN", "FP", "FN", "TP", "n", "Latency", "Size"]].to_string(index=False))
         print("#"*90)
 
 if __name__ == "__main__":
