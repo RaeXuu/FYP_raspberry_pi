@@ -82,4 +82,4 @@ ESP32 BLE → notification_handler() → bytearray buffer
 - 连接后需调用 `client._backend._acquire_mtu()` 以协商最大 MTU
 
 ## 采集策略
-连续流式采集，每 **20s** 为一块（`CHUNK_DURATION=20`）。每块内做滑动窗口推理（2s 窗口，1s hop，共约 19 个窗口）。SQA 过滤低质量窗口（`SQA_THRESHOLD=0.6`），对通过的窗口做 SQA 加权平均得出块级诊断。所有块（Normal/Abnormal/低质量）均以对应前缀保存至 `debug_records/`；每块结果写入 `records/summary.jsonl`。短按按键停止当前会话，再次短按启动新会话。
+连续流式采集，每 **20s** 为一块（`CHUNK_DURATION=20`）。每块内做滑动窗口推理（2s 窗口，1s hop，共约 19 个窗口）。SQA 过滤低质量窗口（`SQA_THRESHOLD=0.65`），对通过的窗口做 SQA 加权平均得出块级诊断。所有块（Normal/Abnormal/低质量）均以对应前缀保存至 `debug_records/`；每块结果写入 `records/summary.jsonl`。短按按键停止当前会话，再次短按启动新会话。

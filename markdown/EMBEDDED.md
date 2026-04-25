@@ -271,7 +271,7 @@ Timeout: 12s                    y=36（每秒倒数）
 | 方法 | 显示内容 |
 |---|---|
 | `show(cpu_pct, mem_used_mb, mem_total_mb, temp_c, wifi_on=True)` | 页一：CPU%（行1）/ 内存（行2）/ 温度（行3）+ 右上角 WiFi 图标 |
-| `show_power(bat_pct, power_w, voltage_v, wifi_on=True)` | 页二：电池%（行1）/ 功率 W（行2）/ 电压 V（行3）+ WiFi 图标（占位，待接电源模块） |
+| `show_power(bat_pct, voltage_v, uptime_str, wifi_on, low_bat)` | 页二：电池%（行1）/ 电压 V（行2）/ 运行时长（行3）+ WiFi 图标 + 低电量闪电图标 |
 
 **WiFi 图标（12×8 像素，右上角 x=115, y=0）**
 - WiFi 已连接：图标常亮
@@ -317,6 +317,8 @@ Timeout: 12s                    y=36（每秒倒数）
 - 低电量警告（≤ 3.4V，非充电中）：OLED 2 强制切换到电源页，右上角闪电图标 1Hz 闪烁
 - 安全关机（≤ 3.2V，非充电中）：停止采集 → OLED 提示 → 3 秒后 `shutdown -h now`，在电源模块硬件断电（默认 3.0V）前完成
 - `power_w` 显示 `-- W`（该模块不支持电流采样）
+- `uptime_str` 来自电源模块 ATE 指令响应，格式 `HH:MM:SS`（超过 1 天则 `Xd HH:MM:SS`）
+- `low_bat=True` 时右上角显示 1Hz 闪烁闪电图标，同时 `_oled2_page` 被强制设为 1
 
 ---
 
@@ -401,6 +403,48 @@ WantedBy=multi-user.target
 | BLE 断连 | 自动重连，指数退避（1s → 2s → 4s，上限 30s） |
 | TFLite 推理失败 | 跳过当前块，记录错误，继续下一块 |
 | 队列积压 | 丢弃最旧块，保留最新数据（已实现） |
+
+### 6.5 SD 卡保护（OverlayFS）
+
+#### 设计动机
+
+SD 卡在断电或系统崩溃时存在文件系统损坏风险，属于边缘设备的常见失效模式。通过 `overlayroot` 方案将根文件系统设为只读，所有运行时写入转入 tmpfs，可从根本上规避 SD 卡写入中断引发的 ext4 损坏。
+
+#### 挂载架构
+
+```
+/dev/mmcblk0p2  ──►  /media/root-ro   (ext4, 只读)  ← SD 卡真实数据
+tmpfs           ──►  /media/root-rw   (tmpfs, 可写) ← 运行时写入缓冲
+overlay(merged) ──►  /               (overlay, 可写) ← 程序实际访问的根
+```
+
+`/data` 分区采用相同结构，以 `data.img`（存于 SD 卡）为只读下层：
+
+```
+/data.img (loop) ──► /media/root-ro/data (ext4, 只读)
+tmpfs            ──► /media/root-rw/overlay/data (tmpfs)
+overlay(merged)  ──► /data                        ← 记录、日志目录
+```
+
+验证命令：
+
+```bash
+mount | grep overlay
+# overlayroot on / type overlay (rw,...,lowerdir=/media/root-ro,upperdir=/media/root-rw/overlay,...)
+# /media/root-ro/data on /data type overlay (rw,...,lowerdir=/media/root-ro/data,upperdir=/media/root-rw/overlay/data,...)
+```
+
+#### 重要约束
+
+| 操作 | 实际写入位置 | 重启后 |
+|---|---|---|
+| 运行时写入 `/` 或 `/data` | tmpfs 上层 | **丢失** |
+| 代码修改（overlayfs 启用前已提交到 SD 卡下层） | SD 卡只读下层 | **保留** |
+| `/boot/firmware` | vfat，只读挂载 | — |
+
+- **日志与推理记录**（`/data/debug_records/`、`/data/records/`）在运行期间正常写入 tmpfs，重启后清空（属预期行为，避免 SD 卡磨损）
+- **代码改动**须在 overlayfs 启用前完成（`git commit` 写入 SD 卡下层），或通过临时将下层重新挂载为可写来持久化
+- `overlayroot` 由 `/boot/firmware/config.txt` 及 `/etc/overlayroot.conf` 控制，修改配置需在下层或 boot 分区操作
 
 ---
 
@@ -509,7 +553,7 @@ sudo systemctl restart heartbeat
   ├─────────┼──────────────────────┼──────────────────────────────────┤
   │ AV<值>E │ 设置低压关断阈值     │ 单位 V，初始 3.0V，建议 2.8-3.5V │
   ├─────────┼──────────────────────┼──────────────────────────────────┤
-  │ ATE     │ 查询系统总运行时长   │ 格式：*天:*时:*分:*秒            │
+  │ ATE     │ 查询系统总运行时长   │ 实际格式：DDD:HH:MM:SS（纯数字）  │
   ├─────────┼──────────────────────┼──────────────────────────────────┤
   │ AU<值>E │ 设置串口数据上报间隔 │ 单位 s，初始 2，不支持小数       │
   ├─────────┼──────────────────────┼──────────────────────────────────┤

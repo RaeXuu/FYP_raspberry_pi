@@ -11,8 +11,8 @@ ATE_INTERVAL = 60   # 每 60 秒查询一次运行时长
 _V_MIN = 3.0
 _V_MAX = 4.2
 
-# ATE 响应格式：X天:X时:X分:X秒
-_ATE_RE = re.compile(r'(\d+)天:(\d+)时:(\d+)分:(\d+)秒')
+# ATE 响应格式：DDD:HH:MM:SS
+_ATE_RE = re.compile(r'^(\d+):(\d{2}):(\d{2}):(\d{2})\s*$')
 
 
 def _voltage_to_pct(v: float) -> float:
@@ -57,8 +57,8 @@ class PowerReader:
         except Exception:
             return
 
-        # 尝试解析 ATE 运行时长（含中文，优先判断）
-        m = _ATE_RE.search(line)
+        # 尝试解析 ATE 运行时长（优先判断）
+        m = _ATE_RE.match(line)
         if m:
             self._uptime = _fmt_uptime(int(m.group(1)), int(m.group(2)),
                                         int(m.group(3)), int(m.group(4)))
