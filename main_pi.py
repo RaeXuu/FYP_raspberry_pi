@@ -45,7 +45,7 @@ SAMPLE_RATE    = 2000
 SEG_DURATION   = 2.0    # 滑动窗口长度（秒），与训练对齐
 OVERLAP        = 0.5    # 50% overlap，与训练对齐
 CHUNK_DURATION = 20     # 每块采集时长（秒）
-SQA_THRESHOLD  = 0.6
+SQA_THRESHOLD  = 0.65
 DIAG_THRESHOLD = 0.5   # prob_normal 高于此值判为 Normal
 
 SEG_SAMPLES   = int(SAMPLE_RATE * SEG_DURATION)      # 4000 samples
