@@ -152,7 +152,7 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
         q_interp.set_tensor(q_in, tensor)
         q_interp.invoke()
         q_probs   = softmax(q_interp.get_tensor(q_out)[0])
-        sqa_score = float(q_probs[1])
+        sqa_score = float(q_probs[0])
 
         passed = sqa_score >= SQA_THRESHOLD
         sqa_line.append(f"w{win_idx+1:02d}:{sqa_score:.2f}{'✓' if passed else '✗'}")
