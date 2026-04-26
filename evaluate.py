@@ -12,11 +12,11 @@
     → index 0 = Normal 概率, index 1 = Abnormal 概率
 
 使用方式
-  python evaluate.py --mode sqa          # SQA 独立评估
-  python evaluate.py --mode diag         # 诊断模型（无 SQA 门控）
-  python evaluate.py --mode both         # 耦合流水线（SQA 门控 + 加权）
-  python evaluate.py --mode sqa --verify # 额外打印若干样本输出，排查索引
-  python evaluate.py --mode all          # 全部模式依次执行
+  python evaluate_tflite_on_pi.py --mode sqa          # SQA 独立评估
+  python evaluate_tflite_on_pi.py --mode diag         # 诊断模型（无 SQA 门控）
+  python evaluate_tflite_on_pi.py --mode both         # 耦合流水线（SQA 门控 + 加权）
+  python evaluate_tflite_on_pi.py --mode sqa --verify # 额外打印若干样本输出，排查索引
+  python evaluate_tflite_on_pi.py --mode all          # 全部模式依次执行
 """
 
 import argparse
@@ -402,7 +402,14 @@ def run_sqa_eval(rows, mel_cfg, sqa_path, label):
      is_int8_in, in_scale, in_zp,
      is_int8_out, out_scale, out_zp) = load_interp(sqa_path)
 
+    # 预热
+    warmup_interp(interp, in_idx, out_idx,
+                  is_int8_in, in_scale, in_zp,
+                  is_int8_out, out_scale, out_zp,
+                  n_warmup=10)
+
     tp = tn = fp = fn = skipped = 0
+    elapsed_all = []
 
     for row in tqdm(rows, desc=f"    {label}", unit="file", leave=True):
         filepath = row["filepath"]
@@ -418,12 +425,14 @@ def run_sqa_eval(rows, mel_cfg, sqa_path, label):
             continue
 
         for t in tensors:
+            t0 = time.perf_counter()
             t_q = quantize_input(t, is_int8_in, in_scale, in_zp)
             interp.set_tensor(in_idx, t_q)
             interp.invoke()
             raw = interp.get_tensor(out_idx)
             out = dequantize_output(raw, is_int8_out, out_scale, out_zp)
             pred = int(np.argmax(out[0]))
+            elapsed_all.append((time.perf_counter() - t0) * 1000)
 
             if   gt_sqa == 1 and pred == 1: tp += 1
             elif gt_sqa == 0 and pred == 0: tn += 1
@@ -439,6 +448,7 @@ def run_sqa_eval(rows, mel_cfg, sqa_path, label):
     print(f"    Accuracy={m['acc']*100:.1f}%  M-Score={m['mscore']*100:.1f}%  "
           f"Se(Bad)={m['se']*100:.1f}%  Sp(Good)={m['sp']*100:.1f}%  "
           f"(evaluated={m['evaluated']} 切片)")
+    print(f"    推理耗时 {format_timing(elapsed_all, 'ms')}")
     return m
 
 
