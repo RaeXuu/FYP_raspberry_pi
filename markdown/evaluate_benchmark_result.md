@@ -1,558 +1,486 @@
-  # 延迟测试（用几条真实 WAV，比如随便挑几条 test 集里的）
-  .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-a/a0002.wav
+"""
 
-  # 准确率评估（诊断 + SQA，FP32 vs INT8）
-  .venv/bin/python evaluate.py --mode both
+TFLite 模型性能基准测试（树莓派端）
+
+测试 6 个模型的推理延迟：FP32 / INT8 动态 / INT8 全整型 × SQA / Diagnosis
+
+  
+
+使用方式
+
+python benchmark.py # 默认 100 轮，10 轮预热
+
+python benchmark.py --runs 200 # 自定义轮数
+
+python benchmark.py --warmup 20 # 自定义预热轮数
+
+python benchmark.py --model diag # 只测诊断模型
+
+python benchmark.py --model sqa # 只测 SQA 模型
+
+"""
 
 
 
 
+"""
+
+量化模型准确率评估（Pi 端）
+
+对测试集每条音频跑完整推理流水线，对比 FP32 vs INT8 动态 vs INT8 全整型。
+
+  
+
+模型输出索引约定
+
+SQA 模型（heart_quality_*.tflite）：
+
+训练时 label 0 = Good, label 1 = Bad（reversed convention）
+
+→ index 0 = Good 概率, index 1 = Bad 概率
+
+  
+
+诊断模型（heart_model_*.tflite）：
+
+训练时 label 0 = Normal, label 1 = Abnormal
+
+→ index 0 = Normal 概率, index 1 = Abnormal 概率
+
+  
+
+使用方式
+
+python evaluate.py --mode sqa # SQA 独立评估
+
+python evaluate.py --mode diag # 诊断模型（无 SQA 门控）
+
+python evaluate.py --mode both # 耦合流水线（SQA 门控 + 加权）
+
+python evaluate.py --mode sqa --verify # 额外打印若干样本输出，排查索引
+
+python evaluate.py --mode all # 全部模式依次执行
+
+"""
 
 
 
+**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py
 
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-a/a0002.wav
+============================================================
 
-使用 WAV 文件：data/raw/DataSet2/training-a/a0002.wav
+  TFLite 模型性能基准测试
+
+  TFLite 后端: ai_edge_litert
+
+  输入形状:   (1, 1, 64, 64)
+
+  预热轮数:   10
+
+  测试轮数:   100
+
+  ────────────────────────────────────────────────
+
+  芯片:       Raspberry Pi 4 Model B Rev 1.5
+
+  CPU 温度:   36.5°C
+
+  CPU 频率:   1800 MHz
+
+  内存:       3172 MB 可用 / 3797 MB 总量
+
+============================================================
+
+  
+
+────────────────────────────────────────────────────────────
+
+  模型: Diag FP32
+
+  文件: /home/rasp4b/FypPi/heart_model_fp32.tflite
 
 INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
 
+  [load] heart_model_fp32.tflite       in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+
+  预热 10 轮... 完成
+
+  基准测试 100 轮... 完成
+
+  mean=14.49ms  median=14.12ms  p95=16.03ms  min=13.83ms  max=21.61ms  std=1.47ms
+
+  
+
+────────────────────────────────────────────────────────────
+
+  模型: Diag INT8动态
+
+  文件: /home/rasp4b/FypPi/heart_model_quant.tflite
+
+  [load] heart_model_quant.tflite      in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+
+  预热 10 轮... 完成
+
+  基准测试 100 轮... 完成
+
+  mean=14.03ms  median=13.99ms  p95=14.31ms  min=13.84ms  max=14.56ms  std=0.13ms
+
+  
+
+────────────────────────────────────────────────────────────
+
+  模型: Diag INT8全整型
+
+  文件: /home/rasp4b/FypPi/heart_model_int8full.tflite
+
+  [load] heart_model_int8full.tflite   in=int8     out=int8     in_scale=0.325044  out_scale=0.069440
+
+  预热 10 轮... 完成
+
+  基准测试 100 轮... 完成
+
+  mean=8.83ms  median=8.72ms  p95=8.80ms  min=8.69ms  max=18.75ms  std=1.00ms
+
+  
+
+────────────────────────────────────────────────────────────
+
+  模型: SQA FP32
+
+  文件: /home/rasp4b/FypPi/heart_quality_fp32.tflite
+
+  [load] heart_quality_fp32.tflite     in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+
+  预热 10 轮... 完成
+
+  基准测试 100 轮... 完成
+
+  mean=14.43ms  median=14.40ms  p95=14.71ms  min=14.23ms  max=14.96ms  std=0.15ms
+
+  
+
+────────────────────────────────────────────────────────────
+
+  模型: SQA INT8动态
+
+  文件: /home/rasp4b/FypPi/heart_quality_quant.tflite
+
+  [load] heart_quality_quant.tflite    in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+
+  预热 10 轮... 完成
+
+  基准测试 100 轮... 完成
+
+  mean=13.88ms  median=13.84ms  p95=14.12ms  min=13.65ms  max=14.54ms  std=0.16ms
+
+  
+
+────────────────────────────────────────────────────────────
+
+  模型: SQA INT8全整型
+
+  文件: /home/rasp4b/FypPi/heart_quality_int8full.tflite
+
+  [load] heart_quality_int8full.tflite  in=int8     out=int8     in_scale=0.324692  out_scale=0.042427
+
+  预热 10 轮... 完成
+
+  基准测试 100 轮... 完成
+
+  mean=8.67ms  median=8.65ms  p95=8.75ms  min=8.63ms  max=8.80ms  std=0.04ms
+
+  
+
+========================================================================
+
+  诊断模型 (Diagnosis) 三模型推理延迟对比 (median, ms)
+
+========================================================================
+
+  指标                            FP32        INT8动态       INT8全整型
+
+  --------------------------------------------------------
+
+  Median (ms)                 14.12         13.99          8.72 
+
+  Speedup vs FP32              1.00x        1.01x         1.62x 
+
+  --------------------------------------------------------
+
+  P95 (ms)                    16.03         14.31          8.80 
+
+  Std (ms)                     1.47          0.13          1.00 
+
+========================================================================
+
+  
+
+========================================================================
+
+  SQA 质量检测模型 三模型推理延迟对比 (median, ms)
+
+========================================================================
+
+  指标                            FP32        INT8动态       INT8全整型
+
+  --------------------------------------------------------
+
+  Median (ms)                 14.40         13.84          8.65 
+
+  Speedup vs FP32              1.00x        1.04x         1.66x 
+
+  --------------------------------------------------------
+
+  P95 (ms)                    14.71         14.12          8.75 
+
+  Std (ms)                     0.15          0.16          0.04 
+
+========================================================================
+
   
 
 ============================================================
 
-模型文件大小
+  模型文件大小
 
 ============================================================
 
-  SQA  FP32    302.8 KB
+  模型                                大小 (KB)
 
-  SQA  INT8    144.7 KB
+  ────────────────────────────────────────
 
-  Diag FP32    302.8 KB
+  Diag FP32                          302.8
 
-  Diag INT8    144.7 KB
+  Diag INT8动态                        144.7
+
+  Diag INT8全整型                       144.4
+
+  SQA FP32                           302.8
+
+  SQA INT8动态                         144.7
+
+  SQA INT8全整型                        144.4
 
   
 
-============================================================
-
-各阶段延迟（median of 100 runs，单个 2s 窗口）
+  总耗时: 8.4s
 
 ============================================================
 
-  Bandpass filter              median=2.23ms  mean=2.49  min=2.15  max=25.71  (n=100)
+**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py
 
-  Log-Mel spectrogram          median=4.80ms  mean=81.36  min=4.72  max=7658.71  (n=100)
+============================================================
 
-  SQA model     FP32           median=13.49ms  mean=13.75  min=13.31  max=30.19  (n=100)
+  TFLite 模型性能基准测试
 
-  SQA model     INT8           median=13.48ms  mean=13.58  min=13.30  max=20.50  (n=100)
+  TFLite 后端: ai_edge_litert
 
-  Diag model    FP32           median=13.51ms  mean=13.56  min=13.33  max=14.29  (n=100)
+  输入形状:   (1, 1, 64, 64)
 
-  Diag model    INT8           median=13.44ms  mean=13.48  min=13.29  max=14.06  (n=100)
+  预热轮数:   10
+
+  测试轮数:   100
+
+  ────────────────────────────────────────────────
+
+  芯片:       Raspberry Pi 4 Model B Rev 1.5
+
+  CPU 温度:   37.5°C
+
+  CPU 频率:   1800 MHz
+
+  内存:       3172 MB 可用 / 3797 MB 总量
+
+============================================================
 
   
 
-============================================================
+────────────────────────────────────────────────────────────
 
-FP32 vs INT8 对比（Table 6.1）
+  模型: Diag FP32
 
-============================================================
-
-  Stage                         FP32 (ms)  INT8 (ms)    Speedup
-
-  ----------------------------------------------------------
-
-  Bandpass filter                       —          —          —
-
-  Log-Mel spectrogram                   —          —          —
-
-  SQA model                        13.49ms     13.48ms      1.00x
-
-  Diag model                       13.51ms     13.44ms      1.01x
-
-  Total per segment                34.03ms     33.94ms
-
-  
-
-  实时性约束：< 2000ms/segment
-
-  FP32 总延迟：34.0ms  ✓
-
-  INT8 总延迟：33.9ms  ✓
-
-  
-
-============================================================
-
-系统资源占用（Table 6.2）
-
-============================================================
-
-  Peak CPU utilisation   1.0%
-
-  Memory (RSS)           249.2 MB
-
-  CPU temperature        44.8 °C
-
-============================================================
-
-
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-b/b0001.wav
-
-使用 WAV 文件：data/raw/DataSet2/training-b/b0001.wav
+  文件: /home/rasp4b/FypPi/heart_model_fp32.tflite
 
 INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
 
-  
+  [load] heart_model_fp32.tflite       in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-============================================================
+  预热 10 轮... 完成
 
-模型文件大小
+  基准测试 100 轮... 完成
 
-============================================================
-
-  SQA  FP32    302.8 KB
-
-  SQA  INT8    144.7 KB
-
-  Diag FP32    302.8 KB
-
-  Diag INT8    144.7 KB
+  mean=14.22ms  median=14.17ms  p95=14.52ms  min=13.99ms  max=15.06ms  std=0.19ms
 
   
 
-============================================================
+────────────────────────────────────────────────────────────
 
-各阶段延迟（median of 100 runs，单个 2s 窗口）
+  模型: Diag INT8动态
 
-============================================================
+  文件: /home/rasp4b/FypPi/heart_model_quant.tflite
 
-  Bandpass filter              median=2.31ms  mean=2.33  min=2.19  max=3.13  (n=100)
+  [load] heart_model_quant.tflite      in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-  Log-Mel spectrogram          median=4.70ms  mean=30.08  min=4.63  max=2540.30  (n=100)
+  预热 10 轮... 完成
 
-  SQA model     FP32           median=13.46ms  mean=13.53  min=13.34  max=14.66  (n=100)
+  基准测试 100 轮... 完成
 
-  SQA model     INT8           median=13.48ms  mean=13.51  min=13.33  max=14.17  (n=100)
-
-  Diag model    FP32           median=13.42ms  mean=13.48  min=13.26  max=14.26  (n=100)
-
-  Diag model    INT8           median=13.44ms  mean=13.48  min=13.28  max=14.23  (n=100)
+  mean=13.70ms  median=13.67ms  p95=14.00ms  min=13.50ms  max=14.23ms  std=0.13ms
 
   
 
-============================================================
+────────────────────────────────────────────────────────────
 
-FP32 vs INT8 对比（Table 6.1）
+  模型: Diag INT8全整型
 
-============================================================
+  文件: /home/rasp4b/FypPi/heart_model_int8full.tflite
 
-  Stage                         FP32 (ms)  INT8 (ms)    Speedup
+  [load] heart_model_int8full.tflite   in=int8     out=int8     in_scale=0.325044  out_scale=0.069440
 
-  ----------------------------------------------------------
+  预热 10 轮... 完成
 
-  Bandpass filter                       —          —          —
+  基准测试 100 轮... 完成
 
-  Log-Mel spectrogram                   —          —          —
-
-  SQA model                        13.46ms     13.48ms      1.00x
-
-  Diag model                       13.42ms     13.44ms      1.00x
-
-  Total per segment                33.91ms     33.94ms
+  mean=8.67ms  median=8.66ms  p95=8.78ms  min=8.63ms  max=8.84ms  std=0.04ms
 
   
 
-  实时性约束：< 2000ms/segment
+────────────────────────────────────────────────────────────
 
-  FP32 总延迟：33.9ms  ✓
+  模型: SQA FP32
 
-  INT8 总延迟：33.9ms  ✓
+  文件: /home/rasp4b/FypPi/heart_quality_fp32.tflite
 
-  
+  [load] heart_quality_fp32.tflite     in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-============================================================
+  预热 10 轮... 完成
 
-系统资源占用（Table 6.2）
+  基准测试 100 轮... 完成
 
-============================================================
-
-  Peak CPU utilisation   1.7%
-
-  Memory (RSS)           249.9 MB
-
-  CPU temperature        42.8 °C
-
-============================================================
-
-
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-c/c0004.wav
-
-使用 WAV 文件：data/raw/DataSet2/training-c/c0004.wav
-
-INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+  mean=14.00ms  median=13.96ms  p95=14.31ms  min=13.83ms  max=14.57ms  std=0.14ms
 
   
 
-============================================================
+────────────────────────────────────────────────────────────
 
-模型文件大小
+  模型: SQA INT8动态
 
-============================================================
+  文件: /home/rasp4b/FypPi/heart_quality_quant.tflite
 
-  SQA  FP32    302.8 KB
+  [load] heart_quality_quant.tflite    in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-  SQA  INT8    144.7 KB
+  预热 10 轮... 完成
 
-  Diag FP32    302.8 KB
+  基准测试 100 轮... 完成
 
-  Diag INT8    144.7 KB
-
-  
-
-============================================================
-
-各阶段延迟（median of 100 runs，单个 2s 窗口）
-
-============================================================
-
-  Bandpass filter              median=2.23ms  mean=2.25  min=2.15  max=3.19  (n=100)
-
-  Log-Mel spectrogram          median=4.73ms  mean=30.16  min=4.65  max=2543.97  (n=100)
-
-  SQA model     FP32           median=13.62ms  mean=13.65  min=13.47  max=14.26  (n=100)
-
-  SQA model     INT8           median=13.49ms  mean=13.53  min=13.33  max=14.15  (n=100)
-
-  Diag model    FP32           median=13.43ms  mean=13.50  min=13.30  max=14.27  (n=100)
-
-  Diag model    INT8           median=13.41ms  mean=13.44  min=13.25  max=13.92  (n=100)
+  mean=13.81ms  median=13.76ms  p95=14.24ms  min=13.61ms  max=14.39ms  std=0.17ms
 
   
 
-============================================================
+────────────────────────────────────────────────────────────
 
-FP32 vs INT8 对比（Table 6.1）
+  模型: SQA INT8全整型
 
-============================================================
+  文件: /home/rasp4b/FypPi/heart_quality_int8full.tflite
 
-  Stage                         FP32 (ms)  INT8 (ms)    Speedup
+  [load] heart_quality_int8full.tflite  in=int8     out=int8     in_scale=0.324692  out_scale=0.042427
 
-  ----------------------------------------------------------
+  预热 10 轮... 完成
 
-  Bandpass filter                       —          —          —
+  基准测试 100 轮... 完成
 
-  Log-Mel spectrogram                   —          —          —
-
-  SQA model                        13.62ms     13.49ms      1.01x
-
-  Diag model                       13.43ms     13.41ms      1.00x
-
-  Total per segment                34.01ms     33.86ms
+  mean=8.71ms  median=8.70ms  p95=8.76ms  min=8.67ms  max=8.82ms  std=0.03ms
 
   
 
-  实时性约束：< 2000ms/segment
+========================================================================
 
-  FP32 总延迟：34.0ms  ✓
+  诊断模型 (Diagnosis) 三模型推理延迟对比 (median, ms)
 
-  INT8 总延迟：33.9ms  ✓
+========================================================================
+
+  指标                            FP32        INT8动态       INT8全整型
+
+  --------------------------------------------------------
+
+  Median (ms)                 14.17         13.67          8.66 
+
+  Speedup vs FP32              1.00x        1.04x         1.64x 
+
+  --------------------------------------------------------
+
+  P95 (ms)                    14.52         14.00          8.78 
+
+  Std (ms)                     0.19          0.13          0.04 
+
+========================================================================
+
+  
+
+========================================================================
+
+  SQA 质量检测模型 三模型推理延迟对比 (median, ms)
+
+========================================================================
+
+  指标                            FP32        INT8动态       INT8全整型
+
+  --------------------------------------------------------
+
+  Median (ms)                 13.96         13.76          8.70 
+
+  Speedup vs FP32              1.00x        1.01x         1.60x 
+
+  --------------------------------------------------------
+
+  P95 (ms)                    14.31         14.24          8.76 
+
+  Std (ms)                     0.14          0.17          0.03 
+
+========================================================================
 
   
 
 ============================================================
 
-系统资源占用（Table 6.2）
+  模型文件大小
 
 ============================================================
 
-  Peak CPU utilisation   1.7%
+  模型                                大小 (KB)
 
-  Memory (RSS)           250.3 MB
+  ────────────────────────────────────────
 
-  CPU temperature        43.8 °C
+  Diag FP32                          302.8
 
-============================================================
+  Diag INT8动态                        144.7
 
+  Diag INT8全整型                       144.4
 
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-d/d0005.wav
+  SQA FP32                           302.8
 
-使用 WAV 文件：data/raw/DataSet2/training-d/d0005.wav
+  SQA INT8动态                         144.7
 
-INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+  SQA INT8全整型                        144.4
 
   
 
-============================================================
-
-模型文件大小
-
-============================================================
-
-  SQA  FP32    302.8 KB
-
-  SQA  INT8    144.7 KB
-
-  Diag FP32    302.8 KB
-
-  Diag INT8    144.7 KB
-
-  
-
-============================================================
-
-各阶段延迟（median of 100 runs，单个 2s 窗口）
-
-============================================================
-
-  Bandpass filter              median=2.22ms  mean=2.24  min=2.16  max=3.01  (n=100)
-
-  Log-Mel spectrogram          median=4.76ms  mean=30.10  min=4.68  max=2535.82  (n=100)
-
-  SQA model     FP32           median=13.44ms  mean=13.47  min=13.28  max=14.03  (n=100)
-
-  SQA model     INT8           median=13.43ms  mean=13.48  min=13.30  max=14.09  (n=100)
-
-  Diag model    FP32           median=13.40ms  mean=13.45  min=13.26  max=14.25  (n=100)
-
-  Diag model    INT8           median=13.41ms  mean=13.45  min=13.23  max=13.96  (n=100)
-
-  
-
-============================================================
-
-FP32 vs INT8 对比（Table 6.1）
-
-============================================================
-
-  Stage                         FP32 (ms)  INT8 (ms)    Speedup
-
-  ----------------------------------------------------------
-
-  Bandpass filter                       —          —          —
-
-  Log-Mel spectrogram                   —          —          —
-
-  SQA model                        13.44ms     13.43ms      1.00x
-
-  Diag model                       13.40ms     13.41ms      1.00x
-
-  Total per segment                33.82ms     33.82ms
-
-  
-
-  实时性约束：< 2000ms/segment
-
-  FP32 总延迟：33.8ms  ✓
-
-  INT8 总延迟：33.8ms  ✓
-
-  
-
-============================================================
-
-系统资源占用（Table 6.2）
-
-============================================================
-
-  Peak CPU utilisation   0.5%
-
-  Memory (RSS)           250.0 MB
-
-  CPU temperature        43.8 °C
+  总耗时: 8.2s
 
 ============================================================
 
 
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-e/e00011.wav
 
-使用 WAV 文件：data/raw/DataSet2/training-e/e00011.wav
 
-INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
 
-  
 
-============================================================
 
-模型文件大小
 
-============================================================
 
-  SQA  FP32    302.8 KB
 
-  SQA  INT8    144.7 KB
 
-  Diag FP32    302.8 KB
 
-  Diag INT8    144.7 KB
-
-  
-
-============================================================
-
-各阶段延迟（median of 100 runs，单个 2s 窗口）
-
-============================================================
-
-  Bandpass filter              median=2.26ms  mean=2.29  min=2.15  max=3.14  (n=100)
-
-  Log-Mel spectrogram          median=4.68ms  mean=30.02  min=4.61  max=2536.04  (n=100)
-
-  SQA model     FP32           median=13.62ms  mean=13.66  min=13.44  max=14.51  (n=100)
-
-  SQA model     INT8           median=13.57ms  mean=13.60  min=13.36  max=14.09  (n=100)
-
-  Diag model    FP32           median=13.48ms  mean=13.53  min=13.31  max=14.27  (n=100)
-
-  Diag model    INT8           median=13.51ms  mean=13.55  min=13.34  max=14.12  (n=100)
-
-  
-
-============================================================
-
-FP32 vs INT8 对比（Table 6.1）
-
-============================================================
-
-  Stage                         FP32 (ms)  INT8 (ms)    Speedup
-
-  ----------------------------------------------------------
-
-  Bandpass filter                       —          —          —
-
-  Log-Mel spectrogram                   —          —          —
-
-  SQA model                        13.62ms     13.57ms      1.00x
-
-  Diag model                       13.48ms     13.51ms      1.00x
-
-  Total per segment                34.05ms     34.03ms
-
-  
-
-  实时性约束：< 2000ms/segment
-
-  FP32 总延迟：34.1ms  ✓
-
-  INT8 总延迟：34.0ms  ✓
-
-  
-
-============================================================
-
-系统资源占用（Table 6.2）
-
-============================================================
-
-  Peak CPU utilisation   0.8%
-
-  Memory (RSS)           250.0 MB
-
-  CPU temperature        43.8 °C
-
-============================================================
-
-
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python benchmark.py --wav data/raw/DataSet2/training-f/f0001.wav
-
-使用 WAV 文件：data/raw/DataSet2/training-f/f0001.wav
-
-INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
-
-  
-
-============================================================
-
-模型文件大小
-
-============================================================
-
-  SQA  FP32    302.8 KB
-
-  SQA  INT8    144.7 KB
-
-  Diag FP32    302.8 KB
-
-  Diag INT8    144.7 KB
-
-  
-
-============================================================
-
-各阶段延迟（median of 100 runs，单个 2s 窗口）
-
-============================================================
-
-  Bandpass filter              median=2.20ms  mean=2.21  min=2.13  max=3.14  (n=100)
-
-  Log-Mel spectrogram          median=4.70ms  mean=30.11  min=4.63  max=2542.04  (n=100)
-
-  SQA model     FP32           median=13.42ms  mean=13.46  min=13.24  max=14.17  (n=100)
-
-  SQA model     INT8           median=13.31ms  mean=13.36  min=13.11  max=14.03  (n=100)
-
-  Diag model    FP32           median=13.39ms  mean=13.44  min=13.24  max=13.99  (n=100)
-
-  Diag model    INT8           median=13.39ms  mean=13.43  min=13.24  max=14.05  (n=100)
-
-  
-
-============================================================
-
-FP32 vs INT8 对比（Table 6.1）
-
-============================================================
-
-  Stage                         FP32 (ms)  INT8 (ms)    Speedup
-
-  ----------------------------------------------------------
-
-  Bandpass filter                       —          —          —
-
-  Log-Mel spectrogram                   —          —          —
-
-  SQA model                        13.42ms     13.31ms      1.01x
-
-  Diag model                       13.39ms     13.39ms      1.00x
-
-  Total per segment                33.71ms     33.60ms
-
-  
-
-  实时性约束：< 2000ms/segment
-
-  FP32 总延迟：33.7ms  ✓
-
-  INT8 总延迟：33.6ms  ✓
-
-  
-
-============================================================
-
-系统资源占用（Table 6.2）
-
-============================================================
-
-  Peak CPU utilisation   2.0%
-
-  Memory (RSS)           250.1 MB
-
-  CPU temperature        44.8 °C
-
-============================================================
-
-
-
-
-
-
-
-
-
-**rasp4b@Rasp4B**:**~ $** /home/rasp4b/FypPi/.venv/bin/python /home/rasp4b/FypPi/evaluate.py --mode sqa
+**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python evaluate.py --mode all
 
   
 
@@ -572,47 +500,67 @@ SQA 模型评估（test_split_sqa.csv）
 
 INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
 
-    FP32: 100%|█████████████████████████████████████████████████████████████████████| 324/324 [02:22<00:00,  2.27file/s]
+  [load] heart_quality_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+
+    FP32: 100%|█████████████████████████████████████████████████████████████████████| 324/324 [02:22<00:00,  2.28file/s]
 
     TP=435 TN=4607 FP=1638 FN=46  (skipped=0)
 
     Accuracy=75.0%  M-Score=82.1%  Se(Bad)=90.4%  Sp(Good)=73.8%  (evaluated=6726 切片)
 
+    推理耗时 mean=13.88ms  median=13.84ms  p95=14.27ms  min=13.60ms  max=17.75ms  std=0.20ms
+
   
 
-  [INT8]  SQA=heart_quality_quant.tflite
+  [INT8动态]  SQA=heart_quality_quant.tflite
 
-    INT8: 100%|█████████████████████████████████████████████████████████████████████| 324/324 [02:07<00:00,  2.55file/s]
+  [load] heart_quality_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+
+    INT8动态: 100%|█████████████████████████████████████████████████████████████████| 324/324 [02:09<00:00,  2.50file/s]
 
     TP=434 TN=4605 FP=1640 FN=47  (skipped=0)
 
     Accuracy=74.9%  M-Score=82.0%  Se(Bad)=90.2%  Sp(Good)=73.7%  (evaluated=6726 切片)
 
-  
-
-============================================================
-
-FP32 vs INT8 对比（SQA 模型）
-
-============================================================
-
-  Metric               FP32       INT8     Change
-
-  --------------------------------------------
-
-  M-Score             82.1%      82.0%      -0.1%
-
-  Se(Bad)             90.4%      90.2%      -0.2%
-
-  Sp(Good)            73.8%      73.7%      -0.0%
-
-  Accuracy            75.0%      74.9%      -0.0%
-
-============================================================
+    推理耗时 mean=13.86ms  median=13.83ms  p95=14.16ms  min=13.59ms  max=16.73ms  std=0.15ms
 
   
 
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python evaluate.py --mode diag
+  [INT8全整型]  SQA=heart_quality_int8full.tflite
+
+  [load] heart_quality_int8full.tflite  in=int8  out=int8  in_scale=0.324692  out_scale=0.042427
+
+    INT8全整型: 100%|███████████████████████████████████████████████████████████████| 324/324 [01:35<00:00,  3.38file/s]
+
+    TP=434 TN=4621 FP=1624 FN=47  (skipped=0)
+
+    Accuracy=75.2%  M-Score=82.1%  Se(Bad)=90.2%  Sp(Good)=74.0%  (evaluated=6726 切片)
+
+    推理耗时 mean=8.87ms  median=8.85ms  p95=8.94ms  min=8.77ms  max=19.01ms  std=0.13ms
+
+  
+
+========================================================================
+
+FP32 vs INT8动态 vs INT8全整型（SQA 模型）
+
+========================================================================
+
+  Metric               FP32     INT8动态    INT8全整型
+
+  --------------------------------------------------------
+
+  M-Score             82.1%      82.0%      82.1%
+
+  Se(Bad)             90.4%      90.2%      90.2%
+
+  Sp(Good)            73.8%      73.7%      74.0%
+
+  Accuracy            75.0%      74.9%      75.2%
+
+========================================================================
+
+  
 
   
 
@@ -628,48 +576,61 @@ FP32 vs INT8 对比（SQA 模型）
 
   [FP32]  DIAG=heart_model_fp32.tflite
 
-INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+  [load] heart_model_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-    FP32: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:11<00:00,  2.20file/s]
+    FP32: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:00<00:00,  2.40file/s]
 
     Accuracy=84.2%  M-Score=87.1%  Se=91.7%  Sp=82.4%  (evaluated=6273 切片, skipped=0 文件)
 
-    推理耗时 mean=14.27ms  min=13.96ms  max=24.55ms
+    推理耗时 mean=13.46ms  median=13.41ms  p95=13.82ms  min=13.14ms  max=14.43ms  std=0.18ms
 
   
 
-  [INT8]  DIAG=heart_model_quant.tflite
+  [INT8动态]  DIAG=heart_model_quant.tflite
 
-    INT8: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:00<00:00,  2.39file/s]
+  [load] heart_model_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+
+    INT8动态: 100%|█████████████████████████████████████████████████████████████████| 288/288 [01:58<00:00,  2.44file/s]
 
     Accuracy=84.1%  M-Score=87.0%  Se=91.7%  Sp=82.3%  (evaluated=6273 切片, skipped=0 文件)
 
-    推理耗时 mean=13.89ms  min=13.59ms  max=21.04ms
+    推理耗时 mean=13.46ms  median=13.42ms  p95=13.82ms  min=13.08ms  max=16.43ms  std=0.19ms
 
   
 
-============================================================
+  [INT8全整型]  DIAG=heart_model_int8full.tflite
 
-FP32 vs INT8 对比（诊断模型，解耦）
+  [load] heart_model_int8full.tflite  in=int8  out=int8  in_scale=0.325044  out_scale=0.069440
 
-============================================================
+    INT8全整型: 100%|███████████████████████████████████████████████████████████████| 288/288 [01:29<00:00,  3.21file/s]
 
-  Metric               FP32       INT8     Change
+    Accuracy=84.1%  M-Score=87.4%  Se=92.7%  Sp=82.1%  (evaluated=6273 切片, skipped=0 文件)
 
-  --------------------------------------------
+    推理耗时 mean=8.88ms  median=8.87ms  p95=8.96ms  min=8.80ms  max=9.27ms  std=0.04ms
 
-  M-Score             87.1%      87.0%      -0.1%
+  
 
-  Sensitivity         91.7%      91.7%      +0.0%
+========================================================================
 
-  Specificity         82.4%      82.3%      -0.1%
+FP32 vs INT8动态 vs INT8全整型（诊断模型，解耦）
 
-  Accuracy            84.2%      84.1%      -0.1%
+========================================================================
 
-============================================================
+  Metric               FP32     INT8动态    INT8全整型
 
+  --------------------------------------------------------
 
-**rasp4b@Rasp4B**:**~/FypPi $** .venv/bin/python evaluate.py --mode both
+  M-Score             87.1%      87.0%      87.4%
+
+  Sensitivity         91.7%      91.7%      92.7%
+
+  Specificity         82.4%      82.3%      82.1%
+
+  Accuracy            84.2%      84.1%      84.1%
+
+========================================================================
+
+  
 
   
 
@@ -679,7 +640,7 @@ FP32 vs INT8 对比（诊断模型，解耦）
 
   测试录音数：288
 
-  SQA_THRESHOLD=0.5（sm[1] 分数，低于此值的窗口被过滤，与 main_pi.py 对齐）
+  SQA_THRESHOLD=0.5（sm[1] 分数，低于此值的窗口被过滤）
 
 ============================================================
 
@@ -687,42 +648,68 @@ FP32 vs INT8 对比（诊断模型，解耦）
 
   [FP32]  SQA=heart_quality_fp32.tflite  DIAG=heart_model_fp32.tflite
 
-INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+  [load] heart_quality_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-    FP32: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:31<00:00,  1.91file/s]
+  [load] heart_model_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-    Accuracy=67.8%  M-Score=75.3%  Se=100.0%  Sp=50.5%  (evaluated=143, skipped=145)
+    FP32: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:22<00:00,  2.02file/s]
 
-    推理耗时 mean=524ms  min=144ms  max=9750ms
+    Accuracy=67.8%  M-Score=75.3%  Se=100.0%  Sp=50.5%  (n=143, skipped=145)
 
-  
+    有效窗口/总窗口: 5/21 (平均)
 
-  [INT8]  SQA=heart_quality_quant.tflite  DIAG=heart_model_quant.tflite
-
-    INT8: 100%|█████████████████████████████████████████████████████████████████████| 288/288 [02:19<00:00,  2.07file/s]
-
-    Accuracy=67.6%  M-Score=75.0%  Se=100.0%  Sp=50.0%  (evaluated=142, skipped=146)
-
-    推理耗时 mean=482ms  min=136ms  max=1865ms
+    文件级推理耗时 mean=493.27ms  median=422.41ms  p95=1084.43ms  min=138.25ms  max=1926.20ms  std=282.05ms
 
   
 
-============================================================
+  [INT8动态]  SQA=heart_quality_quant.tflite  DIAG=heart_model_quant.tflite
 
-FP32 vs INT8 对比（诊断模型，耦合 SQA 门控）
+  [load] heart_quality_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-============================================================
+  [load] heart_model_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
 
-  Metric               FP32       INT8     Change
+    INT8动态: 100%|█████████████████████████████████████████████████████████████████| 288/288 [02:20<00:00,  2.06file/s]
 
-  --------------------------------------------
+    Accuracy=67.6%  M-Score=75.0%  Se=100.0%  Sp=50.0%  (n=142, skipped=146)
 
-  M-Score             75.3%      75.0%      -0.3%
+    有效窗口/总窗口: 5/21 (平均)
 
-  Sensitivity        100.0%     100.0%      +0.0%
+    文件级推理耗时 mean=485.91ms  median=415.40ms  p95=1063.37ms  min=136.77ms  max=1888.45ms  std=276.87ms
 
-  Specificity         50.5%      50.0%      -0.5%
+  
 
-  Accuracy            67.8%      67.6%      -0.2%
+  [INT8全整型]  SQA=heart_quality_int8full.tflite  DIAG=heart_model_int8full.tflite
 
-============================================================
+  [load] heart_quality_int8full.tflite  in=int8  out=int8  in_scale=0.324692  out_scale=0.042427
+
+  [load] heart_model_int8full.tflite  in=int8  out=int8  in_scale=0.325044  out_scale=0.069440
+
+    INT8全整型: 100%|███████████████████████████████████████████████████████████████| 288/288 [01:43<00:00,  2.79file/s]
+
+    Accuracy=66.4%  M-Score=73.9%  Se=100.0%  Sp=47.8%  (n=140, skipped=148)
+
+    有效窗口/总窗口: 5/21 (平均)
+
+    文件级推理耗时 mean=357.26ms  median=308.23ms  p95=768.52ms  min=103.62ms  max=1332.85ms  std=197.81ms
+
+  
+
+========================================================================
+
+FP32 vs INT8动态 vs INT8全整型（诊断模型，耦合 SQA 门控）
+
+========================================================================
+
+  Metric               FP32     INT8动态    INT8全整型
+
+  --------------------------------------------------------
+
+  M-Score             75.3%      75.0%      73.9%
+
+  Sensitivity        100.0%     100.0%     100.0%
+
+  Specificity         50.5%      50.0%      47.8%
+
+  Accuracy            67.8%      67.6%      66.4%
+
+========================================================================
