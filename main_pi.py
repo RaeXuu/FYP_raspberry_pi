@@ -45,7 +45,7 @@ SAMPLE_RATE    = 2000
 SEG_DURATION   = 2.0    # 滑动窗口长度（秒），与训练对齐
 OVERLAP        = 0.5    # 50% overlap，与训练对齐
 CHUNK_DURATION = 20     # 每块采集时长（秒）
-SQA_THRESHOLD  = 0.65
+SQA_THRESHOLD  = 0.05
 DIAG_THRESHOLD = 0.5   # prob_normal 高于此值判为 Normal
 
 SEG_SAMPLES   = int(SAMPLE_RATE * SEG_DURATION)      # 4000 samples
@@ -78,6 +78,19 @@ BAT_SHUTDOWN_V = 3.2  # 软件安全关机（硬件断电默认 3.0V）
 def softmax(x):
     e_x = np.exp(x - np.max(x))
     return e_x / e_x.sum()
+
+
+def quantize_input(data, is_int8, scale, zp):
+    if is_int8:
+        q = data / scale + zp
+        return np.clip(q, -128, 127).astype(np.int8)
+    return data.astype(np.float32)
+
+
+def dequantize_output(raw, is_int8, scale, zp):
+    if is_int8:
+        return (raw.astype(np.float32) - zp) * scale
+    return raw.astype(np.float32)
 
 
 def save_wav(raw_bytes, chunk_idx, prefix):
@@ -117,7 +130,9 @@ def notification_handler(sender, data):
 # 推理函数（在 to_thread 中运行，不阻塞事件循环）
 # ==========================================
 def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
-                  q_in, q_out, d_in, d_out, on_window=None, chunk_idx=0,
+                  q_in, q_out, d_in, d_out,
+                  q_quant, d_quant,
+                  on_window=None, chunk_idx=0,
                   last_label=None, last_chunk_idx=None, last_prob=None):
     os.sched_setaffinity(0, {3})  # 推理线程固定到 core 3
     """
@@ -149,9 +164,11 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
         tensor = mel[np.newaxis, np.newaxis, ...].astype(np.float32)
 
         # SQA
-        q_interp.set_tensor(q_in, tensor)
+        t_q = quantize_input(tensor, *q_quant[:3])
+        q_interp.set_tensor(q_in, t_q)
         q_interp.invoke()
-        q_probs   = softmax(q_interp.get_tensor(q_out)[0])
+        q_probs = softmax(dequantize_output(
+            q_interp.get_tensor(q_out), *q_quant[3:])[0])
         sqa_score = float(q_probs[0])
 
         passed = sqa_score >= SQA_THRESHOLD
@@ -166,9 +183,11 @@ def run_inference(raw_bytes, mel_cfg, q_interp, d_interp,
             continue
 
         # 诊断
-        d_interp.set_tensor(d_in, tensor)
+        t_d = quantize_input(tensor, *d_quant[:3])
+        d_interp.set_tensor(d_in, t_d)
         d_interp.invoke()
-        d_probs     = softmax(d_interp.get_tensor(d_out)[0])
+        d_probs = softmax(dequantize_output(
+            d_interp.get_tensor(d_out), *d_quant[3:])[0])
         prob_normal = float(d_probs[0])
 
         valid_results.append((sqa_score, prob_normal))
@@ -277,7 +296,8 @@ async def sysinfo_updater():
 # 推理 worker（消费队列，一次处理一块）
 # ==========================================
 async def inference_worker(mel_cfg, q_interp, d_interp,
-                            q_in, q_out, d_in, d_out):
+                            q_in, q_out, d_in, d_out,
+                            q_quant, d_quant):
     tally = {"Normal": 0, "Abnormal": 0, "noise": 0,
              "_last_label": None, "_last_chunk_idx": None, "_last_prob": None}
     log_file = None
@@ -316,6 +336,7 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
         label, avg_prob, valid_count, total_windows, window_data = await asyncio.to_thread(
             run_inference, raw_bytes, mel_cfg,
             q_interp, d_interp, q_in, q_out, d_in, d_out,
+            q_quant, d_quant,
             oled.show_running, chunk_idx,
             tally.get("_last_label"), tally.get("_last_chunk_idx"), tally.get("_last_prob")
         )
@@ -385,7 +406,8 @@ async def inference_worker(mel_cfg, q_interp, d_interp,
 # ==========================================
 # 单次采集会话（按键启动/停止）
 # ==========================================
-async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
+async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out,
+                       q_quant, d_quant):
     global _chunk_queue, _running, _recv_buf, _chunk_count
 
     _running = True
@@ -422,7 +444,8 @@ async def run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out):
 
         worker = asyncio.create_task(
             inference_worker(mel_cfg, q_interp, d_interp,
-                             q_in, q_out, d_in, d_out)
+                             q_in, q_out, d_in, d_out,
+                             q_quant, d_quant)
         )
 
         while _running:
@@ -447,16 +470,29 @@ async def main():
     mel_cfg = config["mel"]
 
     q_interp = tflite.Interpreter(
-        model_path=os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite"))
+        model_path=os.path.join(PROJECT_ROOT, "heart_quality_int8full.tflite"))
     d_interp = tflite.Interpreter(
-        model_path=os.path.join(PROJECT_ROOT, "heart_model_quant.tflite"))
+        model_path=os.path.join(PROJECT_ROOT, "heart_model_int8full.tflite"))
     q_interp.allocate_tensors()
     d_interp.allocate_tensors()
 
-    q_in  = q_interp.get_input_details()[0]['index']
-    q_out = q_interp.get_output_details()[0]['index']
-    d_in  = d_interp.get_input_details()[0]['index']
-    d_out = d_interp.get_output_details()[0]['index']
+    q_in_info  = q_interp.get_input_details()[0]
+    q_out_info = q_interp.get_output_details()[0]
+    d_in_info  = d_interp.get_input_details()[0]
+    d_out_info = d_interp.get_output_details()[0]
+
+    q_in  = q_in_info['index']
+    q_out = q_out_info['index']
+    d_in  = d_in_info['index']
+    d_out = d_out_info['index']
+
+    def _quant_params(info):
+        is_int8 = info['dtype'] in (np.int8, np.uint8)
+        scale, zp = info.get('quantization', (0.0, 0))
+        return (is_int8, scale, zp)
+
+    q_quant = _quant_params(q_in_info) + _quant_params(q_out_info)
+    d_quant = _quant_params(d_in_info) + _quant_params(d_out_info)
 
     session_event = asyncio.Event()
 
@@ -513,7 +549,8 @@ async def main():
         if _exit:
             break
         oled.stop_standby_blink()
-        await run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out)
+        await run_session(mel_cfg, q_interp, d_interp, q_in, q_out, d_in, d_out,
+                          q_quant, d_quant)
         if not _exit:
             led.standby()
             oled.start_standby_blink()

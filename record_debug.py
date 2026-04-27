@@ -50,7 +50,7 @@ ESP32_MAC           = "80:F1:B2:ED:B4:12"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 SAMPLE_RATE         = 2000  # ESP32 已在硬件侧降采样至 2000Hz
 RECORD_DURATION     = int(sys.argv[1]) if len(sys.argv) > 1 else 6  # 秒
-SQA_THRESHOLD       = 0.65  # 与 main_pi.py 对齐
+SQA_THRESHOLD       = 0.05  # 与 main_pi.py 对齐
 
 RECORD_BYTES = SAMPLE_RATE * 2 * RECORD_DURATION
 
@@ -102,8 +102,8 @@ async def main():
     with open(os.path.join(PROJECT_ROOT, "config.yaml"), "r") as f:
         config = yaml.safe_load(f)
 
-    q_interp = tflite.Interpreter(model_path=os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite"))
-    d_interp = tflite.Interpreter(model_path=os.path.join(PROJECT_ROOT, "heart_model_quant.tflite"))
+    q_interp = tflite.Interpreter(model_path=os.path.join(PROJECT_ROOT, "heart_quality_int8full.tflite"))
+    d_interp = tflite.Interpreter(model_path=os.path.join(PROJECT_ROOT, "heart_model_int8full.tflite"))
     q_interp.allocate_tensors()
     d_interp.allocate_tensors()
 

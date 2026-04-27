@@ -33,19 +33,24 @@ def preprocess_wav_for_pi(wav_path, config):
     processed_segments = []
 
     for seg in segments:
-        # 4. 转换为 Log-Mel 频谱
+        # 4. 逐段峰值归一化（与 main_pi.py 对齐）
+        # mx = np.max(np.abs(seg))
+        # if mx > 0:
+        #     seg = seg / mx
+
+        # 5. 转换为 Log-Mel 频谱
         mel = logmel_fixed_size(
             y=seg,
             sr=sr,
             mel_cfg=mel_cfg,
             target_shape=(mel_cfg["n_mels"], mel_cfg["target_frames"]),
         )
-        
-        # 5. 调整维度适配 TFLite 输入
+
+        # 6. 调整维度适配 TFLite 输入
         # (32, 64) -> (1, 1, 32, 64)  即 [Batch, Channel, Height, Width]
         mel_tensor = mel[np.newaxis, np.newaxis, ...]
         processed_segments.append(mel_tensor.astype(np.float32))
-        
+
     return processed_segments
 
 # 在 preprocess_pipeline.py 中添加
@@ -72,6 +77,11 @@ def preprocess_array_for_pi(audio_array, config):
 
     processed_segments = []
     for seg in segments:
+        # 逐段峰值归一化（与 main_pi.py 对齐）
+        # mx = np.max(np.abs(seg))
+        # if mx > 0:
+        #     seg = seg / mx
+
         mel = logmel_fixed_size(
             y=seg,
             sr=sr,
