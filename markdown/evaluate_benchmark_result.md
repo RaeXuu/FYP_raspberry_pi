@@ -713,3 +713,97 @@ FP32 vs INT8动态 vs INT8全整型（诊断模型，耦合 SQA 门控）
   Accuracy            67.8%      67.6%      66.4%
 
 ========================================================================
+
+
+
+
+
+
+
+(.venv) rasp4b@Rasp4B:~/FypPi $ python evaluate.py --mode both
+
+============================================================
+诊断模型评估（耦合：SQA 门控 + 加权平均，test_split.csv）
+  测试录音数：288
+  SQA_THRESHOLD=0.5（sm[0] 分数，低于此值的窗口被过滤）
+============================================================
+
+  [FP32]  SQA=heart_quality_fp32.tflite  DIAG=heart_model_fp32.tflite
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+  [load] heart_quality_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+  [load] heart_model_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+    FP32: 100%|███████████████████████████████████████████████████████████████████████████████████| 288/288 [03:19<00:00,  1.45file/s]
+    Accuracy=89.5%  M-Score=87.6%  Se=85.2%  Sp=90.0%  (n=238, skipped=50)
+    有效窗口/总窗口: 16/21 (平均)
+    文件级推理耗时 mean=690.69ms  median=640.27ms  p95=1321.87ms  min=142.63ms  max=3690.65ms  std=406.62ms
+
+  [INT8动态]  SQA=heart_quality_quant.tflite  DIAG=heart_model_quant.tflite
+  [load] heart_quality_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+  [load] heart_model_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+    INT8动态: 100%|███████████████████████████████████████████████████████████████████████████████| 288/288 [03:06<00:00,  1.55file/s]
+    Accuracy=89.5%  M-Score=87.6%  Se=85.2%  Sp=90.0%  (n=238, skipped=50)
+    有效窗口/总窗口: 16/21 (平均)
+    文件级推理耗时 mean=645.52ms  median=614.43ms  p95=1229.13ms  min=140.15ms  max=2035.20ms  std=342.55ms
+
+  [INT8全整型]  SQA=heart_quality_int8full.tflite  DIAG=heart_model_int8full.tflite
+  [load] heart_quality_int8full.tflite  in=int8  out=int8  in_scale=0.324692  out_scale=0.042427
+  [load] heart_model_int8full.tflite  in=int8  out=int8  in_scale=0.325044  out_scale=0.069440
+    INT8全整型: 100%|█████████████████████████████████████████████████████████████████████████████| 288/288 [02:10<00:00,  2.21file/s]
+    Accuracy=89.5%  M-Score=87.6%  Se=85.2%  Sp=90.0%  (n=238, skipped=50)
+    有效窗口/总窗口: 16/21 (平均)
+    文件级推理耗时 mean=452.26ms  median=426.72ms  p95=852.44ms  min=104.48ms  max=1409.42ms  std=237.65ms
+
+========================================================================
+FP32 vs INT8动态 vs INT8全整型（诊断模型，耦合 SQA 门控）
+========================================================================
+  Metric               FP32     INT8动态    INT8全整型
+  --------------------------------------------------------
+  M-Score             87.6%      87.6%      87.6%
+  Sensitivity         85.2%      85.2%      85.2%
+  Specificity         90.0%      90.0%      90.0%
+  Accuracy            89.5%      89.5%      89.5%
+========================================================================
+
+(.venv) rasp4b@Rasp4B:~/FypPi $ python evaluate.py --mode both
+
+============================================================
+诊断模型评估（耦合：SQA 门控 + 加权平均，test_split.csv）
+  测试录音数：288
+  SQA_THRESHOLD=0.65（sm[0] 分数，低于此值的窗口被过滤）
+============================================================
+
+  [FP32]  SQA=heart_quality_fp32.tflite  DIAG=heart_model_fp32.tflite
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+  [load] heart_quality_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+  [load] heart_model_fp32.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+    FP32: 100%|███████████████████████████████████████████████████████████████████████████████████| 288/288 [03:13<00:00,  1.49file/s]
+    Accuracy=90.2%  M-Score=87.5%  Se=84.0%  Sp=91.0%  (n=235, skipped=53)
+    有效窗口/总窗口: 15/21 (平均)
+    文件级推理耗时 mean=669.90ms  median=633.13ms  p95=1255.95ms  min=146.16ms  max=3373.53ms  std=385.38ms
+
+  [INT8动态]  SQA=heart_quality_quant.tflite  DIAG=heart_model_quant.tflite
+  [load] heart_quality_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+  [load] heart_model_quant.tflite  in=float32  out=float32  in_scale=0.000000  out_scale=0.000000
+    INT8动态: 100%|███████████████████████████████████████████████████████████████████████████████| 288/288 [02:59<00:00,  1.60file/s]
+    Accuracy=90.2%  M-Score=87.5%  Se=84.0%  Sp=91.0%  (n=235, skipped=53)
+    有效窗口/总窗口: 15/21 (平均)
+    文件级推理耗时 mean=623.31ms  median=597.82ms  p95=1184.26ms  min=137.74ms  max=2000.82ms  std=332.14ms
+
+  [INT8全整型]  SQA=heart_quality_int8full.tflite  DIAG=heart_model_int8full.tflite
+  [load] heart_quality_int8full.tflite  in=int8  out=int8  in_scale=0.324692  out_scale=0.042427
+  [load] heart_model_int8full.tflite  in=int8  out=int8  in_scale=0.325044  out_scale=0.069440
+    INT8全整型: 100%|█████████████████████████████████████████████████████████████████████████████| 288/288 [02:08<00:00,  2.24file/s]
+    Accuracy=89.8%  M-Score=87.2%  Se=84.0%  Sp=90.5%  (n=235, skipped=53)
+    有效窗口/总窗口: 15/21 (平均)
+    文件级推理耗时 mean=445.60ms  median=424.04ms  p95=845.53ms  min=104.23ms  max=1412.86ms  std=234.80ms
+
+========================================================================
+FP32 vs INT8动态 vs INT8全整型（诊断模型，耦合 SQA 门控）
+========================================================================
+  Metric               FP32     INT8动态    INT8全整型
+  --------------------------------------------------------
+  M-Score             87.5%      87.5%      87.2%
+  Sensitivity         84.0%      84.0%      84.0%
+  Specificity         91.0%      91.0%      90.5%
+  Accuracy            90.2%      90.2%      89.8%
+========================================================================

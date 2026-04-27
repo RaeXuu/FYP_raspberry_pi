@@ -57,7 +57,7 @@ SQA_META   = os.path.join(PROJECT_ROOT, "data", "metadata_quality.csv")
 CONFIG = os.path.join(PROJECT_ROOT, "config.yaml")
 
 # SQA 门控阈值：Good 概率低于此值的窗口在耦合模式中被过滤
-SQA_THRESHOLD  = 0.5
+SQA_THRESHOLD  = 0.65
 DIAG_THRESHOLD = 0.5
 
 # 与 main_pi.py 对齐的分块参数
@@ -274,7 +274,7 @@ def predict_diag_coupled(filepath, mel_cfg,
     诊断推理（SQA 门控 + 加权平均），与 main_pi.py run_inference 完全对齐：
     - 音频先切成 20s chunk
     - 每个 chunk 内做 2s / 50% overlap 滑窗
-    - sqa_score = sm[1]，低于 SQA_THRESHOLD 的窗口跳过
+    - sqa_score = sm[0]，低于 SQA_THRESHOLD 的窗口跳过
     - 所有 chunk 的有效窗口汇总后加权平均得到文件级预测
     返回 (pred, avg_prob_normal, valid_wins, total_wins, elapsed_ms)
     """
@@ -309,7 +309,7 @@ def predict_diag_coupled(filepath, mel_cfg,
             sqa_raw = sqa_interp.get_tensor(sqa_out)
             sqa_out_f = dequantize_output(sqa_raw, sqa_is_int8_out,
                                           sqa_out_scale, sqa_out_zp)
-            sqa_score = float(softmax(sqa_out_f[0])[1])
+            sqa_score = float(softmax(sqa_out_f[0])[0])
             if sqa_score < SQA_THRESHOLD:
                 continue
 
@@ -670,7 +670,7 @@ def main():
         print(f"\n{'='*60}")
         print("诊断模型评估（耦合：SQA 门控 + 加权平均，test_split.csv）")
         print(f"  测试录音数：{len(rows_diag)}")
-        print(f"  SQA_THRESHOLD={SQA_THRESHOLD}（sm[1] 分数，低于此值的窗口被过滤）")
+        print(f"  SQA_THRESHOLD={SQA_THRESHOLD}（sm[0] 分数，低于此值的窗口被过滤）")
         print(f"{'='*60}")
         m_coupled_fp32     = run_diag_coupled_eval(rows_diag, mel_cfg, SQA_FP32,     DIAG_FP32,     "FP32")
         m_coupled_int8     = run_diag_coupled_eval(rows_diag, mel_cfg, SQA_INT8,     DIAG_INT8,     "INT8动态")

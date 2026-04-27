@@ -447,9 +447,9 @@ async def main():
     mel_cfg = config["mel"]
 
     q_interp = tflite.Interpreter(
-        model_path=os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite"))
+        model_path=os.path.join(PROJECT_ROOT, "heart_quality_int8full.tflite"))
     d_interp = tflite.Interpreter(
-        model_path=os.path.join(PROJECT_ROOT, "heart_model_quant.tflite"))
+        model_path=os.path.join(PROJECT_ROOT, "heart_model_int8full.tflite"))
     q_interp.allocate_tensors()
     d_interp.allocate_tensors()
 
