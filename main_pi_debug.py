@@ -20,7 +20,7 @@ SQA_THRESHOLD = 0.6
 
 TEST_WAV = os.path.join(
     PROJECT_ROOT,
-    "/home/rasp4b/FypPi/debug_records/normal_c0003_1774172292.wav"
+    "/home/rasp4b/FypPi/WAV_record/011_2k.wav"
 )
 
 

@@ -36,8 +36,8 @@ buzzer = Buzzer()
 # ==========================================
 # 配置
 # ==========================================
-# ESP32_MAC           = "80:F1:B2:ED:B4:12"
-ESP32_MAC           = "AC:A7:04:85:0D:42"
+ESP32_MAC           = "80:F1:B2:ED:B4:12"  #old esp32
+# ESP32_MAC           = "AC:A7:04:85:0D:42"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 BLE_CONNECT_TIMEOUT = 15
 
@@ -447,9 +447,9 @@ async def main():
     mel_cfg = config["mel"]
 
     q_interp = tflite.Interpreter(
-        model_path=os.path.join(PROJECT_ROOT, "heart_quality_int8full.tflite"))
+        model_path=os.path.join(PROJECT_ROOT, "heart_quality_quant.tflite"))
     d_interp = tflite.Interpreter(
-        model_path=os.path.join(PROJECT_ROOT, "heart_model_int8full.tflite"))
+        model_path=os.path.join(PROJECT_ROOT, "heart_model_quant.tflite"))
     q_interp.allocate_tensors()
     d_interp.allocate_tensors()
 
