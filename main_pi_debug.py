@@ -134,3 +134,56 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#！Result：
+
+# (.venv) rasp4b@Rasp4B:~/FypPi $ /home/rasp4b/FypPi/.venv/bin/python /home/rasp4b/FypPi/main_pi_debug.py
+# INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+# 🎬 读取音频: a0002.wav
+# 📦 共 19 个片段
+# --------------------------------------------------
+# [Debug] Mel[0..<10] = ['10.032022', '8.923600', '-11.701008', '-0.642810', '0.892454', '-12.124862', '-4.820803', '13.502468', '9.678809', '-11.007860']
+# [Debug] Mel[64..<74] = ['10.045051', '6.022046', '-8.502804', '-2.575232', '-1.280083', '-10.762410', '-8.216228', '10.381856', '0.120296', '-2.083143']
+# [Debug] Mel min=-58.917763 max=13.502468 mean=-10.894194
+# 片段 01: SQA → Good=31.78% | Bad=68.22%
+#          诊断 → Abnormal | Normal=2.82%
+# 片段 02: SQA → Good=7.87% | Bad=92.13%
+#          诊断 → Abnormal | Normal=2.15%
+# 片段 03: SQA → Good=2.54% | Bad=97.46%
+#          ⚠️  质量不足，跳过
+# 片段 04: SQA → Good=17.22% | Bad=82.78%
+#          诊断 → Abnormal | Normal=2.30%
+# 片段 05: SQA → Good=9.55% | Bad=90.45%
+#          诊断 → Abnormal | Normal=0.31%
+# 片段 06: SQA → Good=10.31% | Bad=89.69%
+#          诊断 → Abnormal | Normal=0.94%
+# 片段 07: SQA → Good=29.97% | Bad=70.03%
+#          诊断 → Abnormal | Normal=2.30%
+# 片段 08: SQA → Good=20.46% | Bad=79.54%
+#          诊断 → Abnormal | Normal=2.46%
+# 片段 09: SQA → Good=11.98% | Bad=88.02%
+#          诊断 → Abnormal | Normal=1.33%
+# 片段 10: SQA → Good=6.46% | Bad=93.54%
+#          诊断 → Abnormal | Normal=1.64%
+# 片段 11: SQA → Good=11.98% | Bad=88.02%
+#          诊断 → Abnormal | Normal=1.24%
+# 片段 12: SQA → Good=13.89% | Bad=86.11%
+#          诊断 → Abnormal | Normal=2.46%
+# 片段 13: SQA → Good=2.06% | Bad=97.94%
+#          ⚠️  质量不足，跳过
+# 片段 14: SQA → Good=6.46% | Bad=93.54%
+#          诊断 → Abnormal | Normal=1.33%
+# 片段 15: SQA → Good=70.91% | Bad=29.09%
+#          诊断 → Abnormal | Normal=0.27%
+# 片段 16: SQA → Good=30.87% | Bad=69.13%
+#          诊断 → Abnormal | Normal=0.36%
+# 片段 17: SQA → Good=11.98% | Bad=88.02%
+#          诊断 → Abnormal | Normal=1.08%
+# 片段 18: SQA → Good=5.08% | Bad=94.92%
+#          诊断 → Abnormal | Normal=1.24%
+# 片段 19: SQA → Good=9.55% | Bad=90.45%
+#          诊断 → Abnormal | Normal=3.22%
+
+# ==================================================
+# ✨ 最终诊断: Abnormal | 置信度: 98.56%
+# ==================================================
