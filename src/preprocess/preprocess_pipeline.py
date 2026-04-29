@@ -12,6 +12,7 @@ from src.preprocess.filters import apply_bandpass
 from src.preprocess.segment import segment_audio
 from src.preprocess.mel import logmel_fixed_size
 
+# 本地wav文件加载使用 （load wav里做了全局归一化，这里再做逐窗口归一化）（main_pi_debug.py）
 def preprocess_wav_for_pi(wav_path, config):
     """
     完全复刻训练时的预处理流程，用于真机推理。
@@ -34,9 +35,9 @@ def preprocess_wav_for_pi(wav_path, config):
 
     for seg in segments:
         # 4. 逐段峰值归一化（与 main_pi.py 对齐）
-        # mx = np.max(np.abs(seg))
-        # if mx > 0:
-        #     seg = seg / mx
+        mx = np.max(np.abs(seg))
+        if mx > 0:
+            seg = seg / mx
 
         # 5. 转换为 Log-Mel 频谱
         mel = logmel_fixed_size(
@@ -53,7 +54,7 @@ def preprocess_wav_for_pi(wav_path, config):
 
     return processed_segments
 
-# 在 preprocess_pipeline.py 中添加
+# BLE实时流 (不做全局，只做逐个窗口)（record_debug.py）
 def preprocess_array_for_pi(audio_array, config):
     """
     专门为蓝牙实时流设计：不再读取文件，直接处理内存中的 numpy 数组。
@@ -64,9 +65,9 @@ def preprocess_array_for_pi(audio_array, config):
     mel_cfg = config["mel"]
 
     # 峰值归一化，对齐 load_wav 的行为（训练时每段峰值=1.0）
-    max_val = np.max(np.abs(audio_array))
-    if max_val > 0:
-        audio_array = audio_array / max_val
+    # max_val = np.max(np.abs(audio_array))
+    # if max_val > 0:
+    #     audio_array = audio_array / max_val
 
     # 带通滤波
     bp = config["data"]["bandpass"]
@@ -78,9 +79,9 @@ def preprocess_array_for_pi(audio_array, config):
     processed_segments = []
     for seg in segments:
         # 逐段峰值归一化（与 main_pi.py 对齐）
-        # mx = np.max(np.abs(seg))
-        # if mx > 0:
-        #     seg = seg / mx
+        mx = np.max(np.abs(seg))
+        if mx > 0:
+            seg = seg / mx
 
         mel = logmel_fixed_size(
             y=seg,
