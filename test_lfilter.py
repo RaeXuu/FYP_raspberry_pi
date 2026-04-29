@@ -90,3 +90,19 @@ print("\n=== Test 3: toy input ===")
 print(f"  iOS:    {[f'{v:.6f}' for v in ios_toy[:10]]}")
 print(f"  scipy:  {[f'{v:.6f}' for v in scipy_toy[:10]]}")
 print(f"  Match: {np.allclose(ios_toy, scipy_toy, atol=1e-6)}")
+
+#! Result:
+
+# (.venv) rasp4b@Rasp4B:~/FypPi $ /home/rasp4b/FypPi/.venv/bin/python /home/rasp4b/FypPi/test_lfilter.py
+# === Test 1: lfilter ===
+#   iOS vs scipy lfilter match: True
+#   Max diff: 6.34e-10
+
+# === Test 2: filtfilt ===
+#   iOS vs scipy filtfilt match: False
+#   Max diff: 1.59e-01
+
+# === Test 3: toy input ===
+#   iOS:    ['-0.010407', '0.091252', '0.143254', '0.128215', '0.069160', '0.008248', '-0.025287', '-0.031598', '-0.029898', '-0.035356']
+#   scipy:  ['-0.000000', '0.102254', '0.154734', '0.140062', '0.081267', '0.020518', '-0.012950', '-0.019283', '-0.017690', '-0.023332']
+#   Match: False
