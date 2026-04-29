@@ -20,7 +20,7 @@ SQA_THRESHOLD = 0.05  # 与 main_pi.py 对齐
 
 TEST_WAV = os.path.join(
     PROJECT_ROOT,
-    "/home/rasp4b/FypPi/WAV_record/002_2k.wav"
+    "/home/rasp4b/FypPi/data/raw/DataSet2/training-a/a0002.wav"
 )
 
 
@@ -77,6 +77,12 @@ def main():
     tensors = preprocess_wav_for_pi(TEST_WAV, config)
     print(f"📦 共 {len(tensors)} 个片段")
     print("-" * 50)
+
+    mel0 = tensors[0].flatten()
+    print("[Debug] Mel[0..<10] =", [f"{v:.6f}" for v in mel0[:10]])
+    print("[Debug] Mel[64..<74] =", [f"{v:.6f}" for v in mel0[64:74]])
+    print(f"[Debug] Mel min={mel0.min():.6f} max={mel0.max():.6f} "
+          f"mean={mel0.mean():.6f}")
 
     results = []  # (sqa_score, prob_normal)
 
